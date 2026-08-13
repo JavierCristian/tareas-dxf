@@ -5,9 +5,10 @@
  */
 
 const DB_NAME = 'dxf-tareas';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_PROJECTS = 'projects';
 const STORE_TASKS = 'tasks';
+const STORE_RESOURCES = 'resources';
 const LS_KEY = 'dxf-tareas:fallback';
 
 let dbPromise = null;
@@ -24,6 +25,11 @@ function openDb() {
             }
             if (!db.objectStoreNames.contains(STORE_TASKS)) {
                 const store = db.createObjectStore(STORE_TASKS, { keyPath: 'id' });
+                store.createIndex('projectId', 'projectId', { unique: false });
+            }
+            // v2: recursos (personal y maquinaria) por proyecto.
+            if (!db.objectStoreNames.contains(STORE_RESOURCES)) {
+                const store = db.createObjectStore(STORE_RESOURCES, { keyPath: 'id' });
                 store.createIndex('projectId', 'projectId', { unique: false });
             }
         };
@@ -57,11 +63,16 @@ function req(request) {
 /* ------------------------- respaldo localStorage ------------------------- */
 
 function readFallback() {
+    let data;
     try {
-        return JSON.parse(localStorage.getItem(LS_KEY) || '{"projects":[],"tasks":[]}');
+        data = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
     } catch {
-        return { projects: [], tasks: [] };
+        data = {};
     }
+    if (!Array.isArray(data.projects)) data.projects = [];
+    if (!Array.isArray(data.tasks)) data.tasks = [];
+    if (!Array.isArray(data.resources)) data.resources = [];
+    return data;
 }
 
 function writeFallback(data) {
@@ -130,6 +141,8 @@ export async function listProjects() {
 export async function deleteProject(id) {
     const tasks = await listTasks(id);
     await Promise.all(tasks.map((task) => deleteTask(task.id)));
+    const resources = await listResources(id);
+    await Promise.all(resources.map((resource) => deleteResource(resource.id)));
     return withDb(
         (db) => tx(db, [STORE_PROJECTS], 'readwrite', (t) => t.objectStore(STORE_PROJECTS).delete(id)),
         () => {
@@ -176,6 +189,47 @@ export async function deleteTask(id) {
         () => {
             const data = readFallback();
             data.tasks = data.tasks.filter((task) => task.id !== id);
+            writeFallback(data);
+        }
+    );
+}
+
+/* ------------------------------- recursos ------------------------------- */
+
+export async function saveResource(resource) {
+    resource.updatedAt = Date.now();
+    return withDb(
+        (db) => tx(db, [STORE_RESOURCES], 'readwrite', (t) => t.objectStore(STORE_RESOURCES).put(resource)),
+        () => {
+            const data = readFallback();
+            const i = data.resources.findIndex((r) => r.id === resource.id);
+            if (i >= 0) data.resources[i] = resource; else data.resources.push(resource);
+            writeFallback(data);
+        }
+    );
+}
+
+export async function saveResources(resources) {
+    for (const resource of resources) await saveResource(resource);
+}
+
+export async function listResources(projectId) {
+    const resources = await withDb(
+        async (db) => {
+            const t = db.transaction([STORE_RESOURCES], 'readonly');
+            return req(t.objectStore(STORE_RESOURCES).index('projectId').getAll(projectId));
+        },
+        () => readFallback().resources.filter((resource) => resource.projectId === projectId)
+    );
+    return (resources || []).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'es'));
+}
+
+export async function deleteResource(id) {
+    return withDb(
+        (db) => tx(db, [STORE_RESOURCES], 'readwrite', (t) => t.objectStore(STORE_RESOURCES).delete(id)),
+        () => {
+            const data = readFallback();
+            data.resources = data.resources.filter((resource) => resource.id !== id);
             writeFallback(data);
         }
     );

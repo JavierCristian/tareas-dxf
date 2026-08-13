@@ -9,28 +9,42 @@ import { Viewer, formatNumber } from './viewer.js';
 import { anchorOf, measure } from './scene.js';
 import {
     saveProject, getProject, listProjects, deleteProject,
-    saveTask, saveTasks, listTasks, deleteTask, newId, storageMode
+    saveTask, saveTasks, listTasks, deleteTask, newId, storageMode,
+    saveResource, saveResources, listResources, deleteResource
 } from './db.js';
 import {
     STATUSES, PRIORITIES, statusOf, priorityOf, createTask, elementRef, taskAnchor,
-    isOverdue, filterTasks, summarize, tasksToCsv, projectToJson, download
+    isOverdue, filterTasks, summarize, tasksToCsv, projectToJson, download,
+    taskProgress, taskQuantity, progressSummary
 } from './tasks.js';
+import {
+    RESOURCE_TYPES, ROLE_HINTS, CODE_HINTS, typeOf, createResource, normalizeResource,
+    workload, resourcesToCsv
+} from './resources.js';
+import {
+    applyEdits, makeEdit, removeEdit, editOfShape, canSplit, splitOpen, splitClosed,
+    equalCuts, projectOnPath, pathLength, chain, joinTolerance, MIN_PART_RATIO
+} from './edits.js';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 const state = {
     project: null,
-    allShapes: [],
-    shapes: [],
+    allShapes: [],          // tal como vienen del DXF
+    editedShapes: [],       // despues de aplicar divisiones y uniones
+    shapes: [],             // ademas, filtradas por capas importadas
     shapesById: new Map(),
     sceneBounds: null,
     layers: new Map(),      // nombre -> {name, color, visible, imported, count, kinds}
     tasks: [],
+    resources: [],
     selection: [],          // ids de figuras
     multi: false,
-    filters: { text: '', status: 'todas', layer: 'todas' },
+    filters: { text: '', status: 'todas', layer: 'todas', resource: 'todas' },
     draft: null,            // tarea en edicion
+    resourceDraft: null,    // recurso en edicion
+    splitTarget: null,      // figura que se esta dividiendo
     pick: null,             // {onPick, message}
     saveViewTimer: null
 };
@@ -51,12 +65,15 @@ function init() {
     fillSelect($('#task-status'), STATUSES);
     fillSelect($('#task-priority'), PRIORITIES);
     fillSelect($('#filter-status'), STATUSES, 'todas', 'Todos los estados');
+    fillSelect($('#resource-type'), RESOURCE_TYPES);
 
     wireWelcome();
     wireTopbar();
     wirePanel();
     wireModals();
     wireTaskForm();
+    wireResources();
+    wireSplitModal();
 
     refreshRecent();
     registerServiceWorker();
@@ -200,6 +217,7 @@ async function importDxfFile(file) {
                 visible: true,
                 imported: chosen.has(layer.name)
             })),
+            edits: [],
             view: null,
             createdAt: Date.now(),
             updatedAt: Date.now()
@@ -208,7 +226,7 @@ async function importDxfFile(file) {
         if (scene.truncated) {
             toast('El plano es muy grande: se cargo una parte de las entidades.');
         }
-        loadIntoApp(project, scene, []);
+        loadIntoApp(project, scene, [], []);
     } catch (error) {
         hideLoading();
         console.error(error);
@@ -225,8 +243,9 @@ async function openProject(id) {
         await nextFrame();
         const scene = readDxf(project.dxfText);
         const tasks = await listTasks(id);
+        const resources = await listResources(id);
         hideLoading();
-        loadIntoApp(project, scene, tasks);
+        loadIntoApp(project, scene, tasks, resources);
     } catch (error) {
         hideLoading();
         console.error(error);
@@ -234,14 +253,17 @@ async function openProject(id) {
     }
 }
 
-function loadIntoApp(project, scene, tasks) {
+function loadIntoApp(project, scene, tasks, resources = []) {
     state.project = project;
+    if (!Array.isArray(project.edits)) project.edits = [];
     state.allShapes = scene.shapes;
     state.tasks = tasks;
+    state.resources = resources;
     state.selection = [];
-    state.filters = { text: '', status: 'todas', layer: 'todas' };
+    state.filters = { text: '', status: 'todas', layer: 'todas', resource: 'todas' };
     $('#filter-text').value = '';
     $('#filter-status').value = 'todas';
+    $('#resource-search').value = '';
 
     const saved = new Map((project.layers || []).map((l) => [l.name, l]));
     state.layers = new Map();
@@ -272,8 +294,16 @@ function loadIntoApp(project, scene, tasks) {
 /* ------------------------------------------------------------------ */
 
 function applyLayers({ fit = false } = {}) {
+    // Las divisiones y uniones se aplican sobre el DXF recien leido, antes de
+    // filtrar por capas, para que las figuras derivadas hereden su capa.
+    const edited = applyEdits(state.allShapes, state.project.edits || []);
+    state.editedShapes = edited.shapes;
+    if (edited.skipped.length) {
+        console.warn('Ediciones ignoradas (falta su elemento de origen):', edited.skipped);
+    }
+
     const imported = new Set([...state.layers.values()].filter((l) => l.imported).map((l) => l.name));
-    state.shapes = state.allShapes.filter((shape) => imported.has(shape.layer));
+    state.shapes = state.editedShapes.filter((shape) => imported.has(shape.layer));
     state.shapesById = new Map(state.shapes.map((shape) => [shape.id, shape]));
 
     let bounds = null;
@@ -296,8 +326,10 @@ function applyLayers({ fit = false } = {}) {
 
 function updateProjectMeta() {
     const imported = [...state.layers.values()].filter((l) => l.imported).length;
+    const edits = (state.project.edits || []).length;
     $('#project-meta').textContent =
-        `${state.shapes.length} elementos · ${imported}/${state.layers.size} capas · ${state.project.units}`;
+        `${state.shapes.length} elementos · ${imported}/${state.layers.size} capas · ${state.project.units}`
+        + (edits ? ` · ${edits} division(es)/union(es)` : '');
 }
 
 async function persistLayers() {
@@ -483,9 +515,10 @@ function handleTap(local, event) {
 
     if (state.pick) {
         const shape = viewer.pickAt(local.x, local.y);
+        if (state.pick.onlyPoint) return endPick({ point: world, shape });
         if (state.pick.allowPoint && !shape) return endPick({ point: world });
         if (!shape) return toast('No hay ningun elemento en ese punto.');
-        return endPick({ shape });
+        return endPick({ shape, point: world });
     }
 
     const marker = viewer.pickMarkerAt(local.x, local.y);
@@ -557,12 +590,243 @@ function describeMeasure(shape) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Geometria: divisiones y uniones                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Guarda una edicion, rehace la escena y reengancha las tareas que apuntaban
+ * a los elementos consumidos.
+ */
+async function commitEdit(edit, message) {
+    state.project.edits = [...(state.project.edits || []), edit];
+    applyLayers();
+    const touched = remapTasks(edit);
+    await saveProject(state.project);
+    if (touched.length) await saveTasks(touched);
+
+    const created = edit.parts.map((part) => part.id).filter((id) => state.shapesById.has(id));
+    setSelection(created);
+    renderAll();
+    const note = touched.length ? ` ${touched.length} tarea(s) reasignada(s).` : '';
+    toast(message + note);
+}
+
+/** Reasigna las tareas de los elementos consumidos a la parte mas cercana. */
+function remapTasks(edit) {
+    const parts = edit.parts.map((part) => state.shapesById.get(part.id)).filter(Boolean);
+    if (!parts.length) return [];
+    const gone = new Set(edit.from);
+    const touched = [];
+
+    for (const task of state.tasks) {
+        if (!task.elements.some((ref) => gone.has(ref.id))) continue;
+        const next = [];
+        const seen = new Set();
+        for (const ref of task.elements) {
+            if (!gone.has(ref.id)) {
+                if (!seen.has(ref.id)) { next.push(ref); seen.add(ref.id); }
+                continue;
+            }
+            const best = nearestPart(parts, ref);
+            if (best && !seen.has(best.id)) {
+                next.push(elementRef(best, keepNear(best, ref)));
+                seen.add(best.id);
+            }
+        }
+        task.elements = next;
+        task.updatedAt = Date.now();
+        touched.push(task);
+    }
+    return touched;
+}
+
+/**
+ * Mantiene la tarea donde estaba: se ancla al punto de la nueva figura mas
+ * cercano al anterior, en vez de saltar al centro. Asi, al unir y volver a
+ * separar, cada tarea regresa al trozo que le corresponde.
+ */
+function keepNear(shape, ref) {
+    const projection = projectOnPath(shape.pts, ref.x, ref.y);
+    return { x: projection.x, y: projection.y };
+}
+
+function nearestPart(parts, ref) {
+    let best = null;
+    let bestDistance = Infinity;
+    for (const part of parts) {
+        const distance = projectOnPath(part.pts, ref.x, ref.y).distance;
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            best = part;
+        }
+    }
+    return best;
+}
+
+function openSplitModal(shape) {
+    state.splitTarget = shape;
+    const total = pathLength(shape.pts);
+    const closed = !!shape.closed;
+    $('#split-info').textContent =
+        `${KIND_LABELS[shape.kind] || shape.kind} · capa ${shape.layer} · ${describeMeasure(shape)}`;
+    $('#split-units').textContent = state.project.units === 'sin unidad' ? '' : state.project.units;
+    $('#split-distance').value = (total / 2).toFixed(2);
+    $('#split-distance').max = String(total);
+    $('#btn-split-pick').textContent = closed
+        ? 'Tocar dos puntos del contorno'
+        : 'Tocar el punto de corte en el plano';
+    $('#split-pick-hint').textContent = closed
+        ? 'El area se parte con una linea recta entre los dos puntos que toques.'
+        : 'El corte cae sobre el punto del elemento mas cercano al toque.';
+    // En figuras cerradas solo tiene sentido cortar el area con una linea:
+    // repartir el perimetro dejaria trozos sueltos sin superficie.
+    // (Se usa la clase y no el atributo hidden porque .split-option fija display.)
+    $('#split-equal-block').classList.toggle('hidden', closed);
+    $('#split-distance-block').classList.toggle('hidden', closed);
+    $('#split-modal').classList.remove('hidden');
+}
+
+function closeSplitModal() {
+    $('#split-modal').classList.add('hidden');
+}
+
+/** Comprueba que ningun trozo quede reducido a nada. */
+function validCuts(shape, cuts) {
+    const total = pathLength(shape.pts);
+    const minimum = total * MIN_PART_RATIO;
+    const bounds = [0, ...cuts.slice().sort((a, b) => a - b), total];
+    for (let i = 0; i + 1 < bounds.length; i++) {
+        if (bounds[i + 1] - bounds[i] < minimum) return false;
+    }
+    return true;
+}
+
+async function splitOpenShape(shape, cuts) {
+    if (!validCuts(shape, cuts)) {
+        toast('El corte queda demasiado cerca de un extremo.');
+        return;
+    }
+    const parts = splitOpen(shape, cuts);
+    if (parts.length < 2) return toast('No se pudo dividir el elemento.');
+    await commitEdit(makeEdit('division', [shape], parts), `Dividido en ${parts.length} partes.`);
+}
+
+async function splitClosedShape(shape, alongA, alongB) {
+    const total = pathLength(shape.pts);
+    if (Math.abs(alongA - alongB) < total * MIN_PART_RATIO) {
+        toast('Los dos puntos estan demasiado juntos.');
+        return;
+    }
+    const parts = splitClosed(shape, alongA, alongB);
+    await commitEdit(makeEdit('division', [shape], parts), 'Area dividida en dos.');
+}
+
+async function splitByPicking(shape) {
+    closeSplitModal();
+    if (shape.closed) {
+        const first = await startPick('Toca el primer punto del contorno', { onlyPoint: true });
+        if (!first) return;
+        const a = projectOnPath(shape.pts, first.point.x, first.point.y);
+        const second = await startPick('Ahora toca el segundo punto del contorno', { onlyPoint: true });
+        if (!second) return;
+        const b = projectOnPath(shape.pts, second.point.x, second.point.y);
+        await splitClosedShape(shape, a.along, b.along);
+        return;
+    }
+    const result = await startPick('Toca el punto de corte sobre el elemento', { onlyPoint: true });
+    if (!result) return;
+    const cut = projectOnPath(shape.pts, result.point.x, result.point.y);
+    await splitOpenShape(shape, [cut.along]);
+}
+
+async function mergeSelection() {
+    const shapes = state.selection.map((id) => state.shapesById.get(id)).filter(Boolean);
+    const result = chain(shapes, joinTolerance(state.sceneBounds));
+    if (result.error) return toast(result.error);
+    const parts = [{ pts: result.pts, closed: result.closed }];
+    const closedNote = result.closed ? ' El recorrido quedo cerrado.' : '';
+    await commitEdit(makeEdit('union', shapes, parts), `${shapes.length} elementos unidos.${closedNote}`);
+}
+
+async function undoEdit(editId) {
+    const before = state.project.edits || [];
+    const { edits, removed } = removeEdit(before, editId);
+    if (removed.length > 1 && !confirm(
+        `Sobre este elemento hay ${removed.length - 1} edicion(es) posterior(es) que tambien se deshacen. ¿Continuar?`
+    )) return;
+
+    // Elementos que vuelven a existir al deshacer: los origenes de lo eliminado.
+    const restored = new Set();
+    for (const edit of before) {
+        if (removed.includes(edit.id)) for (const id of edit.from) restored.add(id);
+    }
+
+    state.project.edits = edits;
+    applyLayers();
+
+    // Las tareas que apuntaban a partes eliminadas vuelven al elemento original.
+    const candidates = [...restored].map((id) => state.shapesById.get(id)).filter(Boolean);
+    const touched = [];
+    for (const task of state.tasks) {
+        const next = [];
+        const seen = new Set();
+        let changed = false;
+        for (const ref of task.elements) {
+            if (state.shapesById.has(ref.id)) {
+                if (!seen.has(ref.id)) { next.push(ref); seen.add(ref.id); }
+                continue;
+            }
+            changed = true;
+            const shape = nearestPart(candidates, ref);
+            if (shape && !seen.has(shape.id)) {
+                next.push(elementRef(shape, keepNear(shape, ref)));
+                seen.add(shape.id);
+            }
+        }
+        if (changed) {
+            task.elements = next;
+            task.updatedAt = Date.now();
+            touched.push(task);
+        }
+    }
+
+    await saveProject(state.project);
+    if (touched.length) await saveTasks(touched);
+    setSelection([]);
+    renderAll();
+    toast(removed.length > 1 ? `${removed.length} ediciones deshechas.` : 'Edicion deshecha.');
+}
+
+function wireSplitModal() {
+    $('#btn-split-pick').addEventListener('click', () => {
+        const shape = state.splitTarget;
+        if (shape) splitByPicking(shape);
+    });
+    $('#btn-split-equal').addEventListener('click', async () => {
+        const shape = state.splitTarget;
+        if (!shape) return;
+        const parts = Math.round(Number($('#split-parts').value));
+        if (!Number.isFinite(parts) || parts < 2) return toast('Indica cuantas partes (2 o mas).');
+        closeSplitModal();
+        await splitOpenShape(shape, equalCuts(shape, parts));
+    });
+    $('#btn-split-distance').addEventListener('click', async () => {
+        const shape = state.splitTarget;
+        if (!shape) return;
+        const distance = Number($('#split-distance').value);
+        if (!Number.isFinite(distance) || distance <= 0) return toast('Indica una distancia valida.');
+        closeSplitModal();
+        await splitOpenShape(shape, [distance]);
+    });
+}
+
+/* ------------------------------------------------------------------ */
 /* Modo "elegir del plano"                                             */
 /* ------------------------------------------------------------------ */
 
-function startPick(message, { allowPoint = false } = {}) {
+function startPick(message, { allowPoint = false, onlyPoint = false } = {}) {
     return new Promise((resolve) => {
-        state.pick = { resolve, allowPoint };
+        state.pick = { resolve, allowPoint, onlyPoint };
         $('#pick-text').textContent = message;
         $('#pick-banner').classList.remove('hidden');
         togglePanel(false);
@@ -613,20 +877,77 @@ function wirePanel() {
 
     $('#btn-export-csv').addEventListener('click', () => {
         if (!state.tasks.length) return toast('No hay tareas para exportar.');
-        download(`${state.project.name}-tareas.csv`, tasksToCsv(state.tasks), 'text/csv;charset=utf-8');
+        const csv = tasksToCsv(state.tasks, { shapesById: state.shapesById, resources: state.resources });
+        download(`${state.project.name}-tareas.csv`, csv, 'text/csv;charset=utf-8');
     });
     $('#btn-export-json').addEventListener('click', () => {
-        download(`${state.project.name}.json`, projectToJson(state.project, state.tasks, { includeDxf: true }), 'application/json');
-        toast('Copia generada (incluye el plano).');
+        const json = projectToJson(state.project, state.tasks, {
+            includeDxf: true,
+            resources: state.resources
+        });
+        download(`${state.project.name}.json`, json, 'application/json');
+        toast('Copia generada (incluye plano, recursos y divisiones).');
     });
 }
 
 function renderAll() {
     renderLayers();
     renderLayerFilter();
+    renderResourceFilter();
+    renderResources();
     renderTasks();
     renderSelectionCard();
     renderElementPanel();
+}
+
+/**
+ * Avance del proyecto ponderado por cantidad de obra. Sin divisiones, un muro
+ * de 50 m es una sola tarea; dividido, cada trozo pesa lo que realmente mide.
+ */
+function renderProgress() {
+    const box = $('#progress-summary');
+    box.innerHTML = '';
+    if (!state.tasks.length) return;
+
+    const summary = progressSummary(state.tasks, state.shapesById);
+    const units = state.project.units === 'sin unidad' ? '' : ` ${state.project.units}`;
+
+    const rows = [];
+    if (summary.length.pct !== null) {
+        rows.push({
+            label: 'Avance por longitud',
+            pct: summary.length.pct,
+            detail: `${formatNumber(summary.length.done)} de ${formatNumber(summary.length.total)}${units} vinculados a tareas`
+        });
+    }
+    if (summary.area.pct !== null) {
+        rows.push({
+            label: 'Avance por area',
+            pct: summary.area.pct,
+            detail: `${formatNumber(summary.area.done)} de ${formatNumber(summary.area.total)}${units}² vinculados a tareas`
+        });
+    }
+    if (!rows.length) {
+        rows.push({
+            label: 'Avance por tareas',
+            pct: summary.tasks.pct,
+            detail: `${summary.tasks.count} tarea(s)`
+        });
+    }
+
+    for (const row of rows) {
+        const line = document.createElement('div');
+        line.className = 'progress-line';
+        line.innerHTML = `
+            <div class="progress-head"><span></span><strong></strong></div>
+            <div class="progress-bar"><span></span></div>
+            <small class="muted"></small>`;
+        line.querySelector('span').textContent = row.label;
+        line.querySelector('strong').textContent = `${Math.round(row.pct)}%`;
+        line.querySelector('.progress-bar span').style.width = `${Math.max(0, Math.min(100, row.pct))}%`;
+        line.querySelector('small').textContent = row.detail;
+        box.append(line);
+    }
 }
 
 function renderLayerFilter() {
@@ -643,8 +964,10 @@ function renderLayerFilter() {
 
 function renderTasks() {
     const list = $('#task-list');
-    const visible = filterTasks(state.tasks, state.filters);
+    const resourceNames = new Map(state.resources.map((r) => [r.id, `${r.name} ${r.role || ''}`]));
+    const visible = filterTasks(state.tasks, { ...state.filters, resourceNames });
     list.innerHTML = '';
+    renderProgress();
 
     const stats = summarize(state.tasks);
     const summary = $('#task-summary');
@@ -684,7 +1007,24 @@ function renderTasks() {
         if (layers.length) meta.append(tag(layers.join(', ')));
         if (task.elements.length) meta.append(tag(`${task.elements.length} elemento(s)`));
         if (task.assignee) meta.append(tag(task.assignee));
+        for (const id of task.resources || []) {
+            const resource = resourceById(id);
+            if (resource) meta.append(tag(`${typeOf(resource.type).icon} ${resource.name}`));
+        }
         if (task.due) meta.append(tag(`Vence ${task.due}`, isOverdue(task)));
+
+        const progress = taskProgress(task);
+        if (progress > 0) {
+            const bar = document.createElement('div');
+            bar.className = 'task-progress';
+            const fill = document.createElement('span');
+            fill.style.width = `${progress}%`;
+            fill.style.background = status.color;
+            const value = document.createElement('em');
+            value.textContent = `${progress}%`;
+            bar.append(fill, value);
+            item.querySelector('.task-main').append(bar);
+        }
 
         item.querySelector('[data-focus]').addEventListener('click', (e) => { e.stopPropagation(); focusTask(task); });
         item.querySelector('[data-edit]').addEventListener('click', (e) => { e.stopPropagation(); openTaskModal(task); });
@@ -762,7 +1102,9 @@ function renderElementPanel() {
         const rows = [
             ['Tipo', KIND_LABELS[shape.kind] || shape.kind],
             ['Capa', shape.layer],
-            ['Origen', shape.entityType],
+            ['Origen', shape.derived
+                ? (shape.editOp === 'union' ? 'Union de elementos' : 'Division de un elemento')
+                : shape.entityType],
             ['Posicion', `${formatNumber(anchor.x)} , ${formatNumber(anchor.y)}`],
             ['Medida', describeMeasure(shape)],
             ['Id', shape.id]
@@ -797,11 +1139,298 @@ function renderElementPanel() {
         block.append(ul);
         container.append(block);
     }
+
+    container.append(geometryActions());
+
     const action = document.createElement('button');
     action.className = 'btn primary';
     action.textContent = 'Nueva tarea con esta seleccion';
     action.addEventListener('click', () => startNewTask());
     container.append(action);
+}
+
+/** Botonera de division / union para la seleccion actual. */
+function geometryActions() {
+    const box = document.createElement('div');
+    box.className = 'geometry-actions';
+
+    const title = document.createElement('strong');
+    title.textContent = 'Geometria';
+    box.append(title);
+
+    const shapes = state.selection.map((id) => state.shapesById.get(id)).filter(Boolean);
+    const buttons = document.createElement('div');
+    buttons.className = 'geometry-buttons';
+
+    if (shapes.length === 1) {
+        const shape = shapes[0];
+        if (canSplit(shape)) {
+            const split = document.createElement('button');
+            split.className = 'btn small';
+            split.textContent = shape.closed ? 'Dividir el area…' : 'Dividir…';
+            split.addEventListener('click', () => openSplitModal(shape));
+            buttons.append(split);
+        }
+    } else if (shapes.length >= 2) {
+        const merge = document.createElement('button');
+        merge.className = 'btn small';
+        merge.textContent = `Unir ${shapes.length} elementos`;
+        merge.addEventListener('click', () => mergeSelection());
+        buttons.append(merge);
+    }
+
+    // Deshacer alcanza a cualquier elemento derivado que este seleccionado.
+    const derived = shapes.filter((shape) => shape.derived);
+    if (derived.length) {
+        const undo = document.createElement('button');
+        undo.className = 'btn small';
+        undo.textContent = derived[0].editOp === 'union' ? 'Deshacer la union' : 'Deshacer la division';
+        undo.addEventListener('click', () => undoEdit(derived[0].editId));
+        buttons.append(undo);
+    }
+
+    if (!buttons.childElementCount) {
+        const hint = document.createElement('p');
+        hint.className = 'muted';
+        hint.textContent = shapes.length > 1
+            ? 'Selecciona elementos de la misma capa que se toquen por sus extremos para unirlos.'
+            : 'Este elemento no se puede dividir.';
+        box.append(hint);
+        return box;
+    }
+
+    box.append(buttons);
+    const hint = document.createElement('p');
+    hint.className = 'muted';
+    hint.textContent = shapes.length === 1 && !shapes[0].closed
+        ? 'Al dividir, cada trozo queda como un elemento independiente con su propia longitud y sus propias tareas.'
+        : 'Las divisiones y uniones no modifican el archivo DXF: se guardan en el proyecto y se pueden deshacer.';
+    box.append(hint);
+    return box;
+}
+
+/* ------------------------------------------------------------------ */
+/* Recursos: personal y maquinaria                                     */
+/* ------------------------------------------------------------------ */
+
+function resourceById(id) {
+    return state.resources.find((resource) => resource.id === id) || null;
+}
+
+function renderResources() {
+    const list = $('#resource-list');
+    const summary = $('#resource-summary');
+    const search = $('#resource-search').value.trim().toLowerCase();
+    const load = workload(state.resources, state.tasks);
+
+    summary.innerHTML = '';
+    for (const type of RESOURCE_TYPES) {
+        const total = state.resources.filter((r) => r.type === type.id).length;
+        if (total) summary.append(chip(`${total} ${type.plural.toLowerCase()}`, type.color));
+    }
+    const inactive = state.resources.filter((r) => !r.active).length;
+    if (inactive) summary.append(chip(`${inactive} sin actividad`, '#94a3b8'));
+
+    const visible = state.resources.filter((resource) => {
+        if (!search) return true;
+        return [resource.name, resource.role, resource.group, resource.code, resource.phone]
+            .join(' ').toLowerCase().includes(search);
+    });
+
+    list.innerHTML = '';
+    if (!visible.length) {
+        list.innerHTML = state.resources.length
+            ? '<li class="empty">Ningun recurso coincide con la busqueda.</li>'
+            : '<li class="empty">Todavia no hay personal ni maquinaria. Usa los botones de arriba para agregarlos.</li>';
+        return;
+    }
+
+    for (const resource of visible) {
+        const type = typeOf(resource.type);
+        const entry = load.get(resource.id) || { total: 0, open: 0 };
+        const item = document.createElement('li');
+        item.className = 'resource-item';
+        if (!resource.active) item.classList.add('inactive');
+        item.innerHTML = `
+            <span class="resource-icon"></span>
+            <div class="resource-main">
+                <strong></strong>
+                <div class="resource-meta"></div>
+            </div>
+            <div class="task-actions">
+                <button data-tasks title="Ver sus tareas" aria-label="Ver sus tareas">▤</button>
+                <button data-edit title="Editar" aria-label="Editar">✎</button>
+            </div>`;
+        item.querySelector('.resource-icon').textContent = type.icon;
+        item.querySelector('strong').textContent = resource.name;
+
+        const meta = item.querySelector('.resource-meta');
+        meta.append(tag(type.label));
+        if (resource.role) meta.append(tag(resource.role));
+        if (resource.group) meta.append(tag(resource.group));
+        if (resource.code) meta.append(tag(resource.code));
+        if (resource.phone) meta.append(tag(resource.phone));
+        if (!resource.active) meta.append(tag('Sin actividad'));
+        meta.append(tag(entry.total ? `${entry.total} tarea(s) · ${entry.open} abierta(s)` : 'Sin tareas'));
+
+        item.querySelector('[data-edit]').addEventListener('click', (e) => {
+            e.stopPropagation();
+            openResourceModal(resource, false);
+        });
+        item.querySelector('[data-tasks]').addEventListener('click', (e) => {
+            e.stopPropagation();
+            state.filters.resource = resource.id;
+            $('#filter-resource').value = resource.id;
+            showTab('tareas');
+            renderTasks();
+        });
+        item.addEventListener('click', () => openResourceModal(resource, false));
+        list.append(item);
+    }
+}
+
+function renderResourceFilter() {
+    const select = $('#filter-resource');
+    const current = state.filters.resource;
+    select.innerHTML = '';
+    select.append(new Option('Todo el personal y maquinaria', 'todas'));
+    for (const type of RESOURCE_TYPES) {
+        const group = state.resources.filter((r) => r.type === type.id);
+        if (!group.length) continue;
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = type.plural;
+        for (const resource of group) optgroup.append(new Option(resource.name, resource.id));
+        select.append(optgroup);
+    }
+    select.value = state.resources.some((r) => r.id === current) ? current : 'todas';
+    state.filters.resource = select.value;
+}
+
+function showTab(name) {
+    for (const tab of $$('.tab')) tab.classList.toggle('active', tab.dataset.tab === name);
+    for (const panel of $$('.tab-panel')) panel.classList.toggle('active', panel.dataset.panel === name);
+    togglePanel(true);
+}
+
+function updateResourceHints() {
+    const type = $('#resource-type').value;
+    $('#resource-role').placeholder = ROLE_HINTS[type] || '';
+    $('#resource-code').placeholder = CODE_HINTS[type] || '';
+}
+
+function openResourceModal(resource, isNew = false) {
+    state.resourceDraft = { ...resource, isNew };
+    $('#resource-modal-title').textContent = isNew
+        ? `Nuevo ${typeOf(resource.type).label.toLowerCase()}`
+        : 'Editar recurso';
+    $('#resource-type').value = resource.type;
+    $('#resource-name').value = resource.name || '';
+    $('#resource-role').value = resource.role || '';
+    $('#resource-code').value = resource.code || '';
+    $('#resource-group').value = resource.group || '';
+    $('#resource-phone').value = resource.phone || '';
+    $('#resource-active').checked = resource.active !== false;
+    $('#resource-notes').value = resource.notes || '';
+    $('#btn-delete-resource').hidden = isNew;
+    updateResourceHints();
+    $('#resource-modal').classList.remove('hidden');
+    setTimeout(() => $('#resource-name').focus(), 50);
+}
+
+function closeResourceModal() {
+    $('#resource-modal').classList.add('hidden');
+    state.resourceDraft = null;
+    // Si se abrio desde una tarea, la lista de asignados debe reflejar el cambio.
+    if (state.draft) renderResourcePicker();
+}
+
+function wireResources() {
+    $('#btn-new-person').addEventListener('click', () =>
+        openResourceModal(createResource(state.project.id, { type: 'persona' }), true));
+    $('#btn-new-machine').addEventListener('click', () =>
+        openResourceModal(createResource(state.project.id, { type: 'maquina' }), true));
+    $('#resource-search').addEventListener('input', renderResources);
+    $('#resource-type').addEventListener('change', updateResourceHints);
+    $('#filter-resource').addEventListener('change', (e) => {
+        state.filters.resource = e.target.value;
+        renderTasks();
+    });
+
+    $('#btn-export-resources').addEventListener('click', () => {
+        if (!state.resources.length) return toast('No hay recursos para exportar.');
+        download(
+            `${state.project.name}-recursos.csv`,
+            resourcesToCsv(state.resources, state.tasks),
+            'text/csv;charset=utf-8'
+        );
+    });
+
+    $('#btn-manage-resources').addEventListener('click', () =>
+        openResourceModal(createResource(state.project.id, { type: 'persona' }), true));
+
+    $('#resource-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const draft = state.resourceDraft;
+        if (!draft) return;
+        draft.type = $('#resource-type').value;
+        draft.name = $('#resource-name').value.trim();
+        draft.role = $('#resource-role').value.trim();
+        draft.code = $('#resource-code').value.trim();
+        draft.group = $('#resource-group').value.trim();
+        draft.phone = $('#resource-phone').value.trim();
+        draft.active = $('#resource-active').checked;
+        draft.notes = $('#resource-notes').value.trim();
+        if (!draft.name) return;
+
+        const isNew = draft.isNew;
+        delete draft.isNew;
+        draft.projectId = state.project.id;
+        await saveResource(draft);
+        const index = state.resources.findIndex((r) => r.id === draft.id);
+        if (index >= 0) state.resources[index] = draft; else state.resources.push(draft);
+        state.resources.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'es'));
+
+        // Un recurso recien creado desde una tarea se asigna solo.
+        if (isNew && state.draft && !state.draft.resources.includes(draft.id)) {
+            state.draft.resources.push(draft.id);
+        }
+        closeResourceModal();
+        renderResources();
+        renderResourceFilter();
+        renderTasks();
+        toast(isNew ? 'Recurso agregado.' : 'Recurso actualizado.');
+    });
+
+    $('#btn-delete-resource').addEventListener('click', async () => {
+        const draft = state.resourceDraft;
+        if (!draft) return;
+        const load = workload(state.resources, state.tasks).get(draft.id);
+        const used = load ? load.total : 0;
+        const warning = used
+            ? `Este recurso esta asignado a ${used} tarea(s). Se quitara de todas ellas. ¿Eliminar?`
+            : '¿Eliminar este recurso?';
+        if (!confirm(warning)) return;
+
+        await deleteResource(draft.id);
+        state.resources = state.resources.filter((r) => r.id !== draft.id);
+
+        const touched = [];
+        for (const task of state.tasks) {
+            if (!(task.resources || []).includes(draft.id)) continue;
+            task.resources = task.resources.filter((id) => id !== draft.id);
+            task.updatedAt = Date.now();
+            touched.push(task);
+        }
+        if (touched.length) await saveTasks(touched);
+        if (state.draft) state.draft.resources = (state.draft.resources || []).filter((id) => id !== draft.id);
+        if (state.filters.resource === draft.id) state.filters.resource = 'todas';
+
+        closeResourceModal();
+        renderResources();
+        renderResourceFilter();
+        renderTasks();
+        toast('Recurso eliminado.');
+    });
 }
 
 /* ------------------------------------------------------------------ */
@@ -828,7 +1457,10 @@ function openTaskModal(task, isNew = false) {
     $('#task-due').value = task.due || '';
     $('#task-description').value = task.description || '';
     $('#btn-delete-task').hidden = isNew;
+    if (!Array.isArray(state.draft.resources)) state.draft.resources = [];
+    setProgressInputs(taskProgress(task));
     renderLinkedElements();
+    renderResourcePicker();
     $('#task-modal').classList.remove('hidden');
     setTimeout(() => $('#task-title').focus(), 50);
 }
@@ -836,6 +1468,75 @@ function openTaskModal(task, isNew = false) {
 function closeTaskModal() {
     $('#task-modal').classList.add('hidden');
     state.draft = null;
+}
+
+function setProgressInputs(value) {
+    $('#task-progress').value = String(value);
+    $('#task-progress-range').value = String(value);
+    renderTaskQuantity();
+}
+
+/** Muestra cuanta obra representa la tarea, que es la base del avance real. */
+function renderTaskQuantity() {
+    const label = $('#task-quantity');
+    if (!state.draft) return;
+    const quantity = taskQuantity(state.draft, state.shapesById);
+    const units = state.project.units === 'sin unidad' ? '' : ` ${state.project.units}`;
+    const parts = [];
+    if (quantity.length) parts.push(`longitud ${formatNumber(quantity.length)}${units}`);
+    if (quantity.area) parts.push(`area ${formatNumber(quantity.area)}${units}²`);
+    label.textContent = parts.length
+        ? `Cantidad vinculada: ${parts.join(' · ')}. El avance se pondera con esta cantidad.`
+        : 'Sin elementos vinculados: la tarea solo cuenta por unidad.';
+}
+
+function renderResourcePicker() {
+    const box = $('#task-resources');
+    box.innerHTML = '';
+    if (!state.draft) return;
+    const assigned = new Set(state.draft.resources || []);
+
+    if (!state.resources.length) {
+        const empty = document.createElement('p');
+        empty.className = 'muted';
+        empty.textContent = 'Todavia no hay personal ni maquinaria registrada. Usa "Administrar" para agregar.';
+        box.append(empty);
+        return;
+    }
+
+    for (const type of RESOURCE_TYPES) {
+        const group = state.resources.filter((r) => r.type === type.id);
+        if (!group.length) continue;
+        const heading = document.createElement('span');
+        heading.className = 'picker-heading';
+        heading.textContent = type.plural;
+        box.append(heading);
+
+        const row = document.createElement('div');
+        row.className = 'picker-row';
+        for (const resource of group) {
+            const label = document.createElement('label');
+            label.className = 'picker-chip';
+            if (assigned.has(resource.id)) label.classList.add('on');
+            if (!resource.active) label.classList.add('inactive');
+
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.checked = assigned.has(resource.id);
+            input.addEventListener('change', () => {
+                const list = new Set(state.draft.resources || []);
+                if (input.checked) list.add(resource.id); else list.delete(resource.id);
+                state.draft.resources = [...list];
+                label.classList.toggle('on', input.checked);
+            });
+
+            const text = document.createElement('span');
+            text.textContent = resource.role ? `${resource.name} · ${resource.role}` : resource.name;
+            label.append(input, text);
+            row.append(label);
+        }
+        box.append(row);
+    }
 }
 
 function renderLinkedElements() {
@@ -862,6 +1563,7 @@ function renderLinkedElements() {
         remove.addEventListener('click', () => {
             state.draft.elements.splice(index, 1);
             renderLinkedElements();
+            renderTaskQuantity();
         });
         item.append(label, remove);
         list.append(item);
@@ -869,6 +1571,20 @@ function renderLinkedElements() {
 }
 
 function wireTaskForm() {
+    // Barra y numero de avance van sincronizados.
+    $('#task-progress-range').addEventListener('input', (e) => {
+        $('#task-progress').value = e.target.value;
+    });
+    $('#task-progress').addEventListener('input', (e) => {
+        const value = Math.max(0, Math.min(100, Number(e.target.value) || 0));
+        $('#task-progress-range').value = String(value);
+    });
+    // Completar una tarea implica 100 %; abrirla de nuevo baja de 100.
+    $('#task-status').addEventListener('change', (e) => {
+        if (e.target.value === 'completada') setProgressInputs(100);
+        else if (Number($('#task-progress').value) === 100) setProgressInputs(90);
+    });
+
     $('#task-form').addEventListener('submit', async (e) => {
         e.preventDefault();
         const draft = state.draft;
@@ -879,6 +1595,9 @@ function wireTaskForm() {
         draft.assignee = $('#task-assignee').value.trim();
         draft.due = $('#task-due').value;
         draft.description = $('#task-description').value.trim();
+        const progress = Number($('#task-progress').value);
+        draft.progress = Number.isFinite(progress) ? Math.max(0, Math.min(100, Math.round(progress))) : 0;
+        if (draft.status === 'completada') draft.progress = 100;
         if (!draft.title) return;
 
         const isNew = draft.isNew;
@@ -889,6 +1608,7 @@ function wireTaskForm() {
         if (index >= 0) state.tasks[index] = draft; else state.tasks.push(draft);
         closeTaskModal();
         renderTasks();
+        renderResources();
         renderElementPanel();
         toast(isNew ? 'Tarea creada.' : 'Tarea actualizada.');
     });
@@ -900,6 +1620,7 @@ function wireTaskForm() {
         state.tasks = state.tasks.filter((t) => t.id !== draft.id);
         closeTaskModal();
         renderTasks();
+        renderResources();
         renderElementPanel();
         toast('Tarea eliminada.');
     });
@@ -918,15 +1639,26 @@ function wireTaskForm() {
         }
         $('#task-modal').classList.remove('hidden');
         renderLinkedElements();
+        renderTaskQuantity();
     });
 }
 
 function wireModals() {
     for (const button of $$('#task-modal [data-close]')) button.addEventListener('click', closeTaskModal);
     $('#task-modal').addEventListener('click', (e) => { if (e.target.id === 'task-modal') closeTaskModal(); });
+
+    for (const button of $$('#resource-modal [data-close]')) button.addEventListener('click', closeResourceModal);
+    $('#resource-modal').addEventListener('click', (e) => { if (e.target.id === 'resource-modal') closeResourceModal(); });
+
+    for (const button of $$('#split-modal [data-close]')) button.addEventListener('click', closeSplitModal);
+    $('#split-modal').addEventListener('click', (e) => { if (e.target.id === 'split-modal') closeSplitModal(); });
+
     document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
         if (state.pick) return endPick(null);
+        // Se cierra siempre el dialogo que esta encima.
+        if (!$('#resource-modal').classList.contains('hidden')) return closeResourceModal();
+        if (!$('#split-modal').classList.contains('hidden')) return closeSplitModal();
         if (!$('#task-modal').classList.contains('hidden')) return closeTaskModal();
         const layersModal = $('#layers-modal');
         if (!layersModal.classList.contains('hidden')) layersModal.querySelector('[data-close]').click();
@@ -944,14 +1676,33 @@ async function importBackup(file) {
         if (data.formato !== 'dxf-tareas') throw new Error('El archivo no es una copia de esta aplicacion.');
         const source = data.proyecto || {};
         const tasks = (data.tareas || []).map((task) => ({ ...task }));
+        const resources = (data.recursos || []).map((resource) => ({ ...resource }));
+
+        // Se reasignan los identificadores para poder restaurar la misma copia
+        // varias veces sin que un proyecto le pise los datos al anterior.
+        const rebind = (projectId) => {
+            const map = new Map();
+            for (const resource of resources) {
+                const fresh = normalizeResource(resource, projectId);
+                fresh.id = newId('rec');
+                map.set(resource.id, fresh.id);
+                Object.assign(resource, fresh);
+            }
+            for (const task of tasks) {
+                task.projectId = projectId;
+                task.id = newId('task');
+                task.resources = (task.resources || []).map((id) => map.get(id)).filter(Boolean);
+            }
+        };
 
         if (!source.dxf) {
             const existing = source.id ? await getProject(source.id) : null;
             if (!existing) throw new Error('La copia no incluye el plano DXF. Importa primero el archivo DXF y vuelve a intentar.');
-            for (const task of tasks) task.projectId = existing.id;
+            rebind(existing.id);
+            await saveResources(resources);
             await saveTasks(tasks);
             hideLoading();
-            toast('Tareas restauradas en el proyecto existente.');
+            toast('Tareas y recursos restaurados en el proyecto existente.');
             return refreshRecent();
         }
 
@@ -962,15 +1713,14 @@ async function importBackup(file) {
             units: source.unidades || '',
             dxfText: source.dxf,
             layers: source.capas || [],
+            edits: Array.isArray(source.ediciones) ? source.ediciones : [],
             view: null,
             createdAt: source.creado || Date.now(),
             updatedAt: Date.now()
         };
         await saveProject(project);
-        for (const task of tasks) {
-            task.projectId = project.id;
-            task.id = task.id || newId('task');
-        }
+        rebind(project.id);
+        await saveResources(resources);
         await saveTasks(tasks);
         hideLoading();
         toast('Copia restaurada.');

@@ -256,14 +256,22 @@ textarea { resize: vertical; }
 .panel-handle { display: none; }
 .tabs { display: flex; border-bottom: 1px solid var(--line); flex: none; }
 .tab {
-    flex: 1;
+    flex: 1 1 0;
+    min-width: 0;
     background: transparent;
     border: 0;
     border-bottom: 2px solid transparent;
     color: var(--muted);
-    padding: 12px 6px;
+    padding: 12px 4px;
     font-weight: 600;
     font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* En telefonos angostos las cuatro pestanas deben caber sin recortarse. */
+@media (max-width: 420px) {
+    .tab { font-size: 13px; padding: 12px 2px; letter-spacing: -0.01em; }
 }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); }
 .tab-panel { display: none; flex: 1; min-height: 0; flex-direction: column; }
@@ -451,3 +459,87 @@ textarea { resize: vertical; }
     .panel { transition: none; }
     .spinner { animation-duration: 3s; }
 }
+
+/* --------------------------- Avance de las tareas -------------------------- */
+
+.progress-summary { display: grid; gap: 10px; padding: 10px 12px 0; }
+.progress-line { display: grid; gap: 4px; }
+.progress-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; color: var(--muted); }
+.progress-head strong { color: var(--text); font-size: 14px; }
+.progress-bar { height: 6px; border-radius: 4px; background: #0e141c; border: 1px solid var(--line); overflow: hidden; }
+.progress-bar span { display: block; height: 100%; background: var(--accent); transition: width .2s ease; }
+.progress-summary small { font-size: 11.5px; }
+
+.task-progress { position: relative; margin-top: 6px; height: 14px; display: flex; align-items: center; gap: 6px; }
+.task-progress span { display: block; height: 5px; border-radius: 3px; min-width: 2px; }
+.task-progress em { font-style: normal; font-size: 11px; color: var(--muted); }
+
+.progress-field { display: grid; gap: 6px; }
+.progress-input { display: flex; align-items: center; gap: 8px; }
+.progress-input input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent); }
+.progress-input input[type="number"] { width: 78px; flex: none; }
+.progress-input .unit { color: var(--muted); font-size: 13px; }
+
+/* ------------------------------- Recursos --------------------------------- */
+
+.resource-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; padding: 0 12px 12px; }
+.resource-item {
+    display: grid;
+    grid-template-columns: 32px 1fr auto;
+    align-items: center;
+    gap: 10px;
+    background: var(--bg-soft);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px;
+    cursor: pointer;
+}
+.resource-item:hover { border-color: #3a4657; }
+.resource-item.inactive { opacity: .6; }
+.resource-icon { font-size: 20px; text-align: center; }
+.resource-main { min-width: 0; }
+.resource-main strong { display: block; font-size: 14.5px; word-break: break-word; }
+.resource-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 12px; color: var(--muted); }
+.resource-meta .tag { border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
+
+.resource-picker { display: grid; gap: 8px; }
+.picker-heading { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.picker-row { display: flex; flex-wrap: wrap; gap: 6px; }
+/* La especificidad debe superar a ".form label", que apila en columna. */
+.form label.picker-chip, .picker-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 5px 11px;
+    font-size: 13px;
+    background: #0e141c;
+    cursor: pointer;
+    min-height: 34px;
+}
+.picker-chip input { accent-color: var(--accent); margin: 0; }
+.picker-chip.on { border-color: var(--accent); background: var(--accent-soft); }
+.picker-chip.inactive span { color: var(--muted); }
+
+.form label.check-line, .check-line { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 13.5px; }
+.check-line input { accent-color: var(--accent); width: 18px; height: 18px; flex: none; }
+.picker-chip input { flex: none; width: 16px; height: 16px; }
+
+/* --------------------- Divisiones y uniones de elementos ------------------- */
+
+.geometry-actions {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 12px;
+    display: grid;
+    gap: 8px;
+    margin: 4px 0 10px;
+}
+.geometry-actions > strong { font-size: 13.5px; }
+.geometry-actions p { margin: 0; font-size: 12px; line-height: 1.45; }
+.geometry-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.split-option { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: grid; gap: 8px; }
+.split-option label { display: grid; gap: 6px; font-size: 13.5px; }
+.split-option small { line-height: 1.45; }

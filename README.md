@@ -15,11 +15,40 @@ sin servidor ni base de datos remota.
 4. **Registra tareas** asociadas a uno o varios elementos (puntos, lineas,
    polilineas, circulos, arcos, textos, bloques) o a un punto libre del plano.
    Cada tarea tiene titulo, estado, prioridad, responsable, vencimiento,
-   descripcion y los elementos vinculados.
-5. **Muestra las tareas sobre el plano** como marcadores numerados con el color
-   del estado, y las filtra por texto, estado y capa.
-6. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar las tareas a
-   CSV o una copia completa en `.json` que incluye el plano.
+   avance en porcentaje, personal y maquinaria asignados, descripcion y los
+   elementos vinculados.
+5. **Divide y une elementos del plano** para que una actividad corresponda al
+   tramo real ejecutado (ver mas abajo).
+6. **Lleva el registro de recursos**: personal y maquinaria de la obra, con
+   cargo, cuadrilla, identificador y telefono, asignables a cada tarea.
+7. **Muestra las tareas sobre el plano** como marcadores numerados con el color
+   del estado, y las filtra por texto, estado, capa y recurso.
+8. **Calcula el avance ponderado** por longitud y por area, no solo por numero
+   de tareas.
+9. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar las tareas y
+   los recursos a CSV, o una copia completa en `.json` que incluye el plano.
+
+## Divisiones y uniones
+
+Un plano rara vez viene dibujado en los tramos en que se ejecuta la obra: un
+muro puede ser una sola polilinea de 50 m aunque se hormigone en tres etapas.
+Por eso los elementos se pueden partir y reagrupar:
+
+- **Dividir** (panel *Elemento* → *Dividir*): tocando el punto de corte en el
+  plano, en N partes iguales, o a una distancia exacta del inicio. Cada trozo
+  queda como un elemento independiente, con su propia longitud y sus propias
+  tareas.
+- **Dividir un area**: en figuras cerradas se tocan dos puntos del contorno y la
+  superficie se parte con la linea recta entre ambos. Las dos mitades siguen
+  siendo areas cerradas y conservan su superficie.
+- **Unir** (seleccion multiple con ⧉ → *Unir*): varios elementos abiertos de la
+  misma capa que se tocan por sus extremos se convierten en un solo recorrido.
+- **Deshacer**: cualquier division o union se revierte desde el mismo panel. Si
+  encima de ella se hicieron otras, se avisa antes de deshacerlas en cascada.
+
+El archivo DXF original **no se modifica**. Cada operacion se guarda en el
+proyecto como una edicion que se vuelve a aplicar al abrirlo, y las tareas se
+reasignan solas al trozo que les corresponde.
 
 ## Como se usa
 
@@ -45,7 +74,11 @@ sin servidor ni base de datos remota.
 - Referencia probada: un plano de 40.000 entidades (2,9 MB) se lee en ~0,3 s y
   se dibuja completo en ~50 ms en un equipo de escritorio.
 - Los identificadores de los elementos vienen del *handle* del DXF, por lo que
-  las tareas siguen apuntando al mismo elemento al reabrir el proyecto.
+  las tareas siguen apuntando al mismo elemento al reabrir el proyecto. Los
+  trozos creados al dividir usan ese handle mas un sufijo (`A1B~1~xxxx`).
+- Las uniones solo alcanzan a elementos abiertos de la misma capa cuyos extremos
+  coincidan (con una tolerancia proporcional al tamano del plano). Los circulos
+  y las areas cerradas no se unen.
 
 ## Publicar en GitHub Pages
 
@@ -61,7 +94,9 @@ js/dxf.js               lector DXF y armado de la escena
 js/scene.js             indice espacial, seleccion y medidas
 js/viewer.js            lienzo, camara y gestos
 js/db.js                almacenamiento local (IndexedDB / localStorage)
-js/tasks.js             modelo de tareas, filtros y exportacion
+js/tasks.js             modelo de tareas, avance, filtros y exportacion
+js/resources.js         modelo de personal y maquinaria
+js/edits.js             geometria de divisiones y uniones
 js/app.js               union de todo y logica de pantalla
 sw.js                   service worker (uso sin conexion)
 manifest.webmanifest    instalacion como aplicacion

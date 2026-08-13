@@ -103,23 +103,41 @@
             <div class="panel-handle" id="panel-handle"></div>
             <nav class="tabs" role="tablist">
                 <button class="tab active" data-tab="tareas" role="tab">Tareas</button>
+                <button class="tab" data-tab="recursos" role="tab">Recursos</button>
                 <button class="tab" data-tab="capas" role="tab">Capas</button>
                 <button class="tab" data-tab="elemento" role="tab">Elemento</button>
             </nav>
 
             <section class="tab-panel active" data-panel="tareas">
                 <div id="task-summary" class="summary"></div>
+                <div id="progress-summary" class="progress-summary"></div>
                 <div class="filters">
-                    <input type="search" id="filter-text" placeholder="Buscar tarea, responsable o capa">
+                    <input type="search" id="filter-text" placeholder="Buscar tarea, recurso o capa">
                     <div class="filter-row">
                         <select id="filter-status"><option value="todas">Todos los estados</option></select>
                         <select id="filter-layer"><option value="todas">Todas las capas</option></select>
                     </div>
+                    <select id="filter-resource"><option value="todas">Todo el personal y maquinaria</option></select>
                 </div>
                 <ul id="task-list" class="task-list"></ul>
                 <div class="panel-footer">
                     <button class="ghost small" id="btn-export-csv">Exportar CSV</button>
                     <button class="ghost small" id="btn-export-json">Copia .json</button>
+                </div>
+            </section>
+
+            <section class="tab-panel" data-panel="recursos">
+                <div id="resource-summary" class="summary"></div>
+                <div class="layer-actions">
+                    <button class="ghost small" id="btn-new-person">+ Personal</button>
+                    <button class="ghost small" id="btn-new-machine">+ Maquinaria</button>
+                </div>
+                <div class="filters">
+                    <input type="search" id="resource-search" placeholder="Buscar por nombre, cargo o cuadrilla">
+                </div>
+                <ul id="resource-list" class="resource-list"></ul>
+                <div class="panel-footer">
+                    <button class="ghost small" id="btn-export-resources">Exportar CSV</button>
                 </div>
             </section>
 
@@ -192,6 +210,21 @@
                     <input type="date" id="task-due">
                 </label>
             </div>
+            <label class="progress-field">Avance
+                <div class="progress-input">
+                    <input type="range" id="task-progress-range" min="0" max="100" step="5" value="0">
+                    <input type="number" id="task-progress" min="0" max="100" step="1" value="0" inputmode="numeric">
+                    <span class="unit">%</span>
+                </div>
+                <small id="task-quantity" class="muted"></small>
+            </label>
+            <div class="linked">
+                <div class="linked-head">
+                    <strong>Personal y maquinaria</strong>
+                    <button type="button" class="ghost small" id="btn-manage-resources">Administrar</button>
+                </div>
+                <div id="task-resources" class="resource-picker"></div>
+            </div>
             <label>Descripcion
                 <textarea id="task-description" rows="3" maxlength="2000" placeholder="Detalle, materiales, observaciones"></textarea>
             </label>
@@ -210,6 +243,95 @@
                 </div>
             </footer>
         </form>
+    </div>
+</div>
+
+<!-- ------------------------------ Dialogo de recurso ------------------------------ -->
+<div id="resource-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="resource-modal-title">
+    <div class="modal-card">
+        <header class="modal-head">
+            <h2 id="resource-modal-title">Nuevo recurso</h2>
+            <button class="icon-btn" data-close="resource-modal" aria-label="Cerrar">✕</button>
+        </header>
+        <form id="resource-form" class="form">
+            <div class="form-row">
+                <label>Tipo
+                    <select id="resource-type"></select>
+                </label>
+                <label>Nombre
+                    <input type="text" id="resource-name" required maxlength="120" placeholder="Nombre o equipo">
+                </label>
+            </div>
+            <div class="form-row">
+                <label>Cargo o modelo
+                    <input type="text" id="resource-role" maxlength="80">
+                </label>
+                <label>Identificador
+                    <input type="text" id="resource-code" maxlength="40">
+                </label>
+            </div>
+            <div class="form-row">
+                <label>Cuadrilla o empresa
+                    <input type="text" id="resource-group" maxlength="80" placeholder="Ej: Cuadrilla 1, subcontrato">
+                </label>
+                <label>Telefono
+                    <input type="tel" id="resource-phone" maxlength="40" placeholder="+56 9 …">
+                </label>
+            </div>
+            <label class="check-line">
+                <input type="checkbox" id="resource-active" checked>
+                <span>Esta trabajando actualmente en la obra</span>
+            </label>
+            <label>Notas
+                <textarea id="resource-notes" rows="2" maxlength="1000" placeholder="Turno, certificaciones, mantenciones"></textarea>
+            </label>
+            <footer class="modal-foot">
+                <button type="button" class="btn danger" id="btn-delete-resource" hidden>Eliminar</button>
+                <div>
+                    <button type="button" class="btn" data-close="resource-modal">Cancelar</button>
+                    <button type="submit" class="btn primary">Guardar</button>
+                </div>
+            </footer>
+        </form>
+    </div>
+</div>
+
+<!-- ------------------------------ Dialogo de division ------------------------------ -->
+<div id="split-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="split-modal-title">
+    <div class="modal-card">
+        <header class="modal-head">
+            <h2 id="split-modal-title">Dividir elemento</h2>
+            <button class="icon-btn" data-close="split-modal" aria-label="Cerrar">✕</button>
+        </header>
+        <div class="form">
+            <p id="split-info" class="muted"></p>
+            <div class="split-option">
+                <button type="button" class="btn primary" id="btn-split-pick">Tocar el punto de corte en el plano</button>
+                <small id="split-pick-hint" class="muted">El corte cae sobre el punto del elemento mas cercano al toque.</small>
+            </div>
+            <div class="split-option" id="split-equal-block">
+                <label>En partes iguales
+                    <div class="progress-input">
+                        <input type="number" id="split-parts" min="2" max="50" step="1" value="2" inputmode="numeric">
+                        <button type="button" class="btn" id="btn-split-equal">Dividir</button>
+                    </div>
+                </label>
+            </div>
+            <div class="split-option" id="split-distance-block">
+                <label>A una distancia del inicio
+                    <div class="progress-input">
+                        <input type="number" id="split-distance" min="0" step="0.01" inputmode="decimal">
+                        <span class="unit" id="split-units"></span>
+                        <button type="button" class="btn" id="btn-split-distance">Dividir</button>
+                    </div>
+                </label>
+            </div>
+            <footer class="modal-foot">
+                <div>
+                    <button type="button" class="btn" data-close="split-modal">Cancelar</button>
+                </div>
+            </footer>
+        </div>
     </div>
 </div>
 
