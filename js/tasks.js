@@ -200,7 +200,7 @@ export function tasksToCsv(tasks, { shapesById = new Map(), resources = [] } = {
     return '﻿' + [header.join(';'), ...rows].join('\r\n');
 }
 
-export function projectToJson(project, tasks, { includeDxf = false, resources = [] } = {}) {
+export function projectToJson(project, tasks, { includeDxf = false, resources = [], places = [] } = {}) {
     return JSON.stringify({
         formato: 'dxf-tareas',
         version: 2,
@@ -217,6 +217,7 @@ export function projectToJson(project, tasks, { includeDxf = false, resources = 
             dxf: includeDxf ? project.dxfText : undefined
         },
         recursos: resources,
+        ubicaciones: places,
         tareas: tasks
     }, null, 2);
 }

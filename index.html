@@ -131,13 +131,22 @@
                 <div class="layer-actions">
                     <button class="ghost small" id="btn-new-person">+ Personal</button>
                     <button class="ghost small" id="btn-new-machine">+ Maquinaria</button>
+                    <button class="ghost small" id="btn-new-place">+ Punto en el plano</button>
                 </div>
                 <div class="filters">
                     <input type="search" id="resource-search" placeholder="Buscar por nombre, cargo o cuadrilla">
                 </div>
                 <ul id="resource-list" class="resource-list"></ul>
+                <div class="places-block">
+                    <div class="linked-head">
+                        <strong>Ubicaciones en el plano</strong>
+                        <span id="place-count" class="muted"></span>
+                    </div>
+                    <ul id="place-list" class="resource-list"></ul>
+                </div>
                 <div class="panel-footer">
                     <button class="ghost small" id="btn-export-resources">Exportar CSV</button>
+                    <button class="ghost small" id="btn-export-places">Ubicaciones CSV</button>
                 </div>
             </section>
 
@@ -289,6 +298,40 @@
                 <button type="button" class="btn danger" id="btn-delete-resource" hidden>Eliminar</button>
                 <div>
                     <button type="button" class="btn" data-close="resource-modal">Cancelar</button>
+                    <button type="submit" class="btn primary">Guardar</button>
+                </div>
+            </footer>
+        </form>
+    </div>
+</div>
+
+<!-- ------------------------------ Dialogo de ubicacion ------------------------------ -->
+<div id="place-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="place-modal-title">
+    <div class="modal-card">
+        <header class="modal-head">
+            <h2 id="place-modal-title">Punto en el plano</h2>
+            <button class="icon-btn" data-close="place-modal" aria-label="Cerrar">✕</button>
+        </header>
+        <form id="place-form" class="form">
+            <label>Nombre del punto
+                <input type="text" id="place-label" maxlength="120" placeholder="Ej: Frente norte, acopio, torre 3">
+            </label>
+            <p id="place-position" class="muted"></p>
+            <div class="linked">
+                <div class="linked-head">
+                    <strong>Quien esta en este punto</strong>
+                    <button type="button" class="ghost small" id="btn-place-add-resource">+ Recurso</button>
+                </div>
+                <div id="place-resources" class="resource-picker"></div>
+            </div>
+            <label>Nota
+                <textarea id="place-note" rows="2" maxlength="1000" placeholder="Turno, frente de trabajo, observaciones"></textarea>
+            </label>
+            <footer class="modal-foot">
+                <button type="button" class="btn danger" id="btn-delete-place" hidden>Eliminar</button>
+                <div>
+                    <button type="button" class="btn" id="btn-move-place">Mover</button>
+                    <button type="button" class="btn" data-close="place-modal">Cancelar</button>
                     <button type="submit" class="btn primary">Guardar</button>
                 </div>
             </footer>

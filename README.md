@@ -21,12 +21,35 @@ sin servidor ni base de datos remota.
    tramo real ejecutado (ver mas abajo).
 6. **Lleva el registro de recursos**: personal y maquinaria de la obra, con
    cargo, cuadrilla, identificador y telefono, asignables a cada tarea.
-7. **Muestra las tareas sobre el plano** como marcadores numerados con el color
+7. **Reparte los recursos sobre el plano** con puntos que indican quien esta
+   trabajando en cada frente (ver mas abajo).
+8. **Muestra las tareas sobre el plano** como marcadores numerados con el color
    del estado, y las filtra por texto, estado, capa y recurso.
-8. **Calcula el avance ponderado** por longitud y por area, no solo por numero
+9. **Calcula el avance ponderado** por longitud y por area, no solo por numero
    de tareas.
-9. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar las tareas y
-   los recursos a CSV, o una copia completa en `.json` que incluye el plano.
+10. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar tareas,
+    recursos y ubicaciones a CSV, o una copia completa en `.json` que incluye el
+    plano.
+
+## Recursos repartidos en el plano
+
+En la pestana *Recursos*, ademas del listado de personal y maquinaria, se
+pueden crear **puntos** sobre el plano:
+
+- **+ Punto en el plano** pide tocar un lugar y abre el punto para nombrarlo
+  (por ejemplo "Frente norte") y elegir quien esta ahi. Si el recurso todavia no
+  existe, el boton *+ Recurso* lo crea y lo deja asignado a ese punto.
+- El boton **📍** de cada ficha ubica ese recurso directamente, o centra la
+  vista en su punto si ya estaba ubicado.
+- En el plano cada punto se dibuja como una placa cuadrada con el icono del
+  recurso (👷 personal, 🚜 maquinaria) y su color, distinta de los marcadores
+  redondos de tareas. Si hay varios recursos en el mismo punto, una insignia
+  indica cuantos.
+- Tocar la placa abre el punto para cambiar quien esta ahi, moverlo a otro lugar
+  o eliminarlo.
+
+Un punto puede existir sin recursos (una posicion prevista) y recibirlos
+despues; y un mismo recurso puede estar en mas de un punto.
 
 ## Divisiones y uniones
 
@@ -96,6 +119,7 @@ js/viewer.js            lienzo, camara y gestos
 js/db.js                almacenamiento local (IndexedDB / localStorage)
 js/tasks.js             modelo de tareas, avance, filtros y exportacion
 js/resources.js         modelo de personal y maquinaria
+js/places.js            puntos del plano donde se ubican los recursos
 js/edits.js             geometria de divisiones y uniones
 js/app.js               union de todo y logica de pantalla
 sw.js                   service worker (uso sin conexion)
