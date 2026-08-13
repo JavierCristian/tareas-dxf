@@ -59,42 +59,108 @@ export function taskProgress(task) {
 }
 
 /** Cantidad de obra que representa una tarea, segun los elementos vinculados. */
-export function taskQuantity(task, shapesById) {
-    let length = 0;
-    let area = 0;
+export function taskQuantity(task, shapesById, metersPerUnit = 1) {
+    const total = { length: 0, area: 0, volume: 0, count: 0 };
+    const done = { length: 0, area: 0, volume: 0, count: 0 };
+
     for (const ref of task.elements) {
         const shape = shapesById.get(ref.id);
         if (!shape) continue;
         const m = measure(shape);
+        const isDone = !!ref.done;
+        total.count++;
+        if (isDone) done.count++;
         if (!m) continue;
-        if (shape.closed && m.area) area += m.area;
-        else length += m.length;
+
+        if (shape.closed && m.area) {
+            total.area += m.area;
+            if (isDone) done.area += m.area;
+        } else {
+            total.length += m.length;
+            if (isDone) done.length += m.length;
+        }
+        // El volumen solo existe si el tramo tiene seccion definida.
+        const width = Number(ref.width);
+        const depth = Number(ref.depth);
+        if (width > 0 && depth > 0) {
+            const volume = m.length * metersPerUnit * width * depth;
+            total.volume += volume;
+            if (isDone) done.volume += volume;
+        }
     }
-    return { length, area };
+    return { ...total, done };
+}
+
+/** Avance calculado a partir de los tramos marcados, ponderado por su medida. */
+export function progressFromElements(task, shapesById) {
+    const quantity = taskQuantity(task, shapesById);
+    if (quantity.length > 0) return (quantity.done.length / quantity.length) * 100;
+    if (quantity.area > 0) return (quantity.done.area / quantity.area) * 100;
+    if (quantity.count > 0) return (quantity.done.count / quantity.count) * 100;
+    return 0;
+}
+
+/**
+ * Rendimiento medido sobre los dias en que hubo avance registrado: los dias
+ * parados por lluvia o falta de frente no castigan el numero.
+ */
+export function performance(task, shapesById, metersPerUnit = 1) {
+    const days = new Set();
+    for (const ref of task.elements) {
+        if (ref.done && ref.doneAt) days.add(ref.doneAt);
+    }
+    const quantity = taskQuantity(task, shapesById, metersPerUnit);
+    const dayCount = days.size;
+    if (!dayCount) return { days: 0, perDay: 0, volumePerDay: 0, remaining: quantity.length, daysLeft: null };
+
+    const perDay = quantity.done.length / dayCount;
+    const remaining = quantity.length - quantity.done.length;
+    return {
+        days: dayCount,
+        perDay,
+        volumePerDay: quantity.done.volume / dayCount,
+        remaining,
+        daysLeft: perDay > 0 ? Math.ceil(remaining / perDay) : null,
+        lastDay: [...days].sort().pop()
+    };
 }
 
 /**
  * Avance del conjunto, ponderado por la cantidad de cada tarea.
  * Es lo que hace util dividir un elemento: cada trozo aporta su longitud real.
  */
-export function progressSummary(tasks, shapesById) {
-    let lengthTotal = 0;
-    let lengthDone = 0;
-    let areaTotal = 0;
-    let areaDone = 0;
+export function progressSummary(tasks, shapesById, metersPerUnit = 1) {
+    const total = { length: 0, area: 0, volume: 0, count: 0 };
+    const done = { length: 0, area: 0, volume: 0, count: 0 };
     let simple = 0;
+
     for (const task of tasks) {
-        const quantity = taskQuantity(task, shapesById);
+        const quantity = taskQuantity(task, shapesById, metersPerUnit);
         const ratio = taskProgress(task) / 100;
-        lengthTotal += quantity.length;
-        lengthDone += quantity.length * ratio;
-        areaTotal += quantity.area;
-        areaDone += quantity.area * ratio;
+        total.length += quantity.length;
+        total.area += quantity.area;
+        total.volume += quantity.volume;
+        total.count += quantity.count;
+
+        if (tracksElements(task)) {
+            // Con tramos marcados la cantidad ejecutada es exacta, no estimada.
+            done.length += quantity.done.length;
+            done.area += quantity.done.area;
+            done.volume += quantity.done.volume;
+            done.count += quantity.done.count;
+        } else {
+            done.length += quantity.length * ratio;
+            done.area += quantity.area * ratio;
+            done.volume += quantity.volume * ratio;
+        }
         simple += ratio;
     }
+
     return {
-        length: { total: lengthTotal, done: lengthDone, pct: lengthTotal ? (lengthDone / lengthTotal) * 100 : null },
-        area: { total: areaTotal, done: areaDone, pct: areaTotal ? (areaDone / areaTotal) * 100 : null },
+        length: { total: total.length, done: done.length, pct: total.length ? (done.length / total.length) * 100 : null },
+        area: { total: total.area, done: done.area, pct: total.area ? (done.area / total.area) * 100 : null },
+        volume: { total: total.volume, done: done.volume, pct: total.volume ? (done.volume / total.volume) * 100 : null },
+        elements: { total: total.count, done: done.count },
         tasks: { count: tasks.length, pct: tasks.length ? (simple / tasks.length) * 100 : 0 }
     };
 }
@@ -105,8 +171,21 @@ export function elementRef(shape, anchor) {
         kind: shape.kind,
         layer: shape.layer,
         x: anchor ? anchor.x : shape.pts[0],
-        y: anchor ? anchor.y : shape.pts[1]
+        y: anchor ? anchor.y : shape.pts[1],
+        done: false,     // tramo ejecutado
+        doneAt: null,    // fecha (YYYY-MM-DD) en que se marco
+        width: null,     // ancho de excavacion, en metros
+        depth: null      // profundidad de excavacion, en metros
     };
+}
+
+/**
+ * Una tarea lleva su avance por tramos cuando sus elementos tienen el campo
+ * `done`. Las tareas creadas antes de esta funcion conservan el porcentaje
+ * escrito a mano hasta que se marque el primer tramo.
+ */
+export function tracksElements(task) {
+    return (task.elements || []).some((element) => 'done' in element);
 }
 
 export function taskAnchor(task) {
@@ -167,24 +246,35 @@ function round(value, decimals = 2) {
     return String(Math.round(value * factor) / factor).replace('.', ',');
 }
 
-export function tasksToCsv(tasks, { shapesById = new Map(), resources = [] } = {}) {
+export function tasksToCsv(tasks, { shapesById = new Map(), resources = [], metersPerUnit = 1 } = {}) {
     const names = new Map(resources.map((r) => [r.id, r.name]));
     const header = [
-        'id', 'titulo', 'estado', 'prioridad', 'avance_%', 'longitud', 'area',
+        'id', 'titulo', 'estado', 'prioridad', 'avance_%',
+        'tramos', 'tramos_hechos', 'longitud', 'longitud_hecha', 'area', 'volumen_m3', 'volumen_hecho_m3',
+        'rendimiento_por_dia', 'dias_con_avance', 'dias_restantes',
         'personal_y_maquinaria', 'responsable', 'vencimiento', 'capas', 'elementos',
         'x', 'y', 'descripcion', 'creada', 'actualizada'
     ];
     const rows = tasks.map((task) => {
         const anchor = taskAnchor(task) || { x: '', y: '' };
-        const quantity = taskQuantity(task, shapesById);
+        const quantity = taskQuantity(task, shapesById, metersPerUnit);
+        const rate = performance(task, shapesById, metersPerUnit);
         return [
             task.id,
             task.title,
             statusOf(task.status).label,
             priorityOf(task.priority).label,
             taskProgress(task),
+            quantity.count || '',
+            quantity.done.count || '',
             round(quantity.length),
+            round(quantity.done.length),
             round(quantity.area),
+            round(quantity.volume),
+            round(quantity.done.volume),
+            round(rate.perDay),
+            rate.days || '',
+            rate.daysLeft === null ? '' : rate.daysLeft,
             (task.resources || []).map((id) => names.get(id) || id).join(' | '),
             task.assignee,
             task.due,
@@ -197,7 +287,35 @@ export function tasksToCsv(tasks, { shapesById = new Map(), resources = [] } = {
             new Date(task.updatedAt).toISOString()
         ].map(csvCell).join(';');
     });
-    return '﻿' + [header.join(';'), ...rows].join('\r\n');
+    return '\ufeff' + [header.join(';'), ...rows].join('\r\n');
+}
+
+/** Detalle tramo a tramo, para revisar o cubicar fuera de la aplicacion. */
+export function elementsToCsv(tasks, shapesById, metersPerUnit = 1) {
+    const header = ['tarea', 'tramo_id', 'tipo', 'capa', 'longitud', 'ancho_m', 'profundidad_m', 'volumen_m3', 'hecho', 'fecha'];
+    const rows = [];
+    for (const task of tasks) {
+        for (const ref of task.elements) {
+            const shape = shapesById.get(ref.id);
+            const m = shape ? measure(shape) : null;
+            const length = m ? m.length : 0;
+            const width = Number(ref.width) || 0;
+            const depth = Number(ref.depth) || 0;
+            rows.push([
+                task.title,
+                ref.id,
+                ref.kind,
+                ref.layer,
+                round(length),
+                round(width),
+                round(depth),
+                width && depth ? round(length * metersPerUnit * width * depth) : '',
+                ref.done ? 'Si' : 'No',
+                ref.doneAt || ''
+            ].map(csvCell).join(';'));
+        }
+    }
+    return '\ufeff' + [header.join(';'), ...rows].join('\r\n');
 }
 
 export function projectToJson(project, tasks, { includeDxf = false, resources = [], places = [] } = {}) {

@@ -4,7 +4,7 @@
  * del plano. Todo el estado vive en el dispositivo.
  */
 
-import { readDxf, KIND_LABELS, growBounds } from './dxf.js';
+import { readDxf, KIND_LABELS, growBounds, metersPerUnit } from './dxf.js';
 import { Viewer, formatNumber } from './viewer.js';
 import { anchorOf, measure } from './scene.js';
 import {
@@ -16,7 +16,8 @@ import {
 import {
     STATUSES, PRIORITIES, statusOf, priorityOf, createTask, elementRef, taskAnchor,
     isOverdue, filterTasks, summarize, tasksToCsv, projectToJson, download,
-    taskProgress, taskQuantity, progressSummary
+    taskProgress, taskQuantity, progressSummary, tracksElements, progressFromElements,
+    performance, elementsToCsv
 } from './tasks.js';
 import {
     RESOURCE_TYPES, ROLE_HINTS, CODE_HINTS, typeOf, createResource, normalizeResource,
@@ -40,6 +41,7 @@ const state = {
     shapes: [],             // ademas, filtradas por capas importadas
     shapesById: new Map(),
     sceneBounds: null,
+    unitScale: 1,           // metros que vale una unidad del plano
     layers: new Map(),      // nombre -> {name, color, visible, imported, count, kinds}
     tasks: [],
     resources: [],
@@ -265,6 +267,7 @@ function loadIntoApp(project, scene, tasks, resources = [], places = []) {
     state.project = project;
     if (!Array.isArray(project.edits)) project.edits = [];
     state.allShapes = scene.shapes;
+    state.unitScale = metersPerUnit(scene.units);
     state.tasks = tasks;
     state.resources = resources;
     state.places = places;
@@ -524,6 +527,12 @@ function handleTap(local, event) {
 
     if (state.pick) {
         const shape = viewer.pickAt(local.x, local.y);
+        // En modo continuo cada toque suma o quita, y el modo sigue activo.
+        if (state.pick.multi) {
+            if (!shape) return toast('No hay ningun elemento en ese punto.');
+            state.pick.onEach(shape);
+            return;
+        }
         if (state.pick.onlyPoint) return endPick({ point: world, shape });
         if (state.pick.allowPoint && !shape) return endPick({ point: world });
         if (!shape) return toast('No hay ningun elemento en ese punto.');
@@ -837,10 +846,11 @@ function wireSplitModal() {
 /* Modo "elegir del plano"                                             */
 /* ------------------------------------------------------------------ */
 
-function startPick(message, { allowPoint = false, onlyPoint = false } = {}) {
+function startPick(message, { allowPoint = false, onlyPoint = false, multi = false, onEach = null } = {}) {
     return new Promise((resolve) => {
-        state.pick = { resolve, allowPoint, onlyPoint };
+        state.pick = { resolve, allowPoint, onlyPoint, multi, onEach };
         $('#pick-text').textContent = message;
+        $('#btn-cancel-pick').textContent = multi ? 'Listo' : 'Cancelar';
         $('#pick-banner').classList.remove('hidden');
         togglePanel(false);
     });
@@ -850,6 +860,7 @@ function endPick(result) {
     const pick = state.pick;
     state.pick = null;
     $('#pick-banner').classList.add('hidden');
+    $('#btn-cancel-pick').textContent = 'Cancelar';
     if (pick) pick.resolve(result);
 }
 
@@ -890,8 +901,21 @@ function wirePanel() {
 
     $('#btn-export-csv').addEventListener('click', () => {
         if (!state.tasks.length) return toast('No hay tareas para exportar.');
-        const csv = tasksToCsv(state.tasks, { shapesById: state.shapesById, resources: state.resources });
+        const csv = tasksToCsv(state.tasks, {
+            shapesById: state.shapesById,
+            resources: state.resources,
+            metersPerUnit: state.unitScale
+        });
         download(`${state.project.name}-tareas.csv`, csv, 'text/csv;charset=utf-8');
+    });
+    $('#btn-export-elements').addEventListener('click', () => {
+        const withElements = state.tasks.filter((task) => task.elements.length);
+        if (!withElements.length) return toast('Ninguna tarea tiene tramos vinculados.');
+        download(
+            `${state.project.name}-tramos.csv`,
+            elementsToCsv(withElements, state.shapesById, state.unitScale),
+            'text/csv;charset=utf-8'
+        );
     });
     $('#btn-export-json').addEventListener('click', () => {
         const json = projectToJson(state.project, state.tasks, {
@@ -924,7 +948,7 @@ function renderProgress() {
     box.innerHTML = '';
     if (!state.tasks.length) return;
 
-    const summary = progressSummary(state.tasks, state.shapesById);
+    const summary = progressSummary(state.tasks, state.shapesById, state.unitScale);
     const units = state.project.units === 'sin unidad' ? '' : ` ${state.project.units}`;
 
     const rows = [];
@@ -940,6 +964,20 @@ function renderProgress() {
             label: 'Avance por area',
             pct: summary.area.pct,
             detail: `${formatNumber(summary.area.done)} de ${formatNumber(summary.area.total)}${units}² vinculados a tareas`
+        });
+    }
+    if (summary.volume.pct !== null) {
+        rows.push({
+            label: 'Avance por volumen',
+            pct: summary.volume.pct,
+            detail: `${formatNumber(summary.volume.done)} de ${formatNumber(summary.volume.total)} m³ excavados`
+        });
+    }
+    if (summary.elements.total) {
+        rows.push({
+            label: 'Tramos ejecutados',
+            pct: (summary.elements.done / summary.elements.total) * 100,
+            detail: `${summary.elements.done} de ${summary.elements.total} tramos`
         });
     }
     if (!rows.length) {
@@ -1104,8 +1142,27 @@ function renderMarkers(tasks) {
     viewer.setMarkers(markers);
 }
 
+const DONE_COLOR = '#22c55e';
+
+/** Resalta los tramos de una tarea: verde lo hecho, color de estado lo pendiente. */
+function applyTaskHighlight(task) {
+    if (!task || !task.elements.length) return clearTaskHighlight();
+    const pending = statusOf(task.status).color;
+    const map = new Map();
+    for (const ref of task.elements) {
+        if (!state.shapesById.has(ref.id)) continue;
+        map.set(ref.id, ref.done ? DONE_COLOR : pending);
+    }
+    viewer.setTaskHighlight(map);
+}
+
+function clearTaskHighlight() {
+    viewer.setTaskHighlight(null);
+}
+
 function focusTask(task) {
     const anchor = taskAnchor(task);
+    applyTaskHighlight(task);
     const ids = task.elements.map((e) => e.id).filter((id) => state.shapesById.has(id));
     if (ids.length) {
         setSelection(ids);
@@ -1166,6 +1223,18 @@ function renderElementPanel() {
             button.append(dot, document.createTextNode(task.title || '(sin titulo)'));
             button.addEventListener('click', () => openTaskModal(task));
             li.append(button);
+
+            // Marcar el tramo estando frente a el, sin abrir la tarea.
+            const ref = task.elements.find((e) => e.id === id);
+            const mark = document.createElement('button');
+            mark.className = 'mark-done' + (ref.done ? ' on' : '');
+            mark.textContent = ref.done ? '✓ Hecho' : 'Marcar hecho';
+            mark.title = ref.done && ref.doneAt ? `Ejecutado el ${ref.doneAt}` : 'Marcar este tramo como ejecutado';
+            mark.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleElementDone(task, id);
+            });
+            li.append(mark);
             ul.append(li);
         }
         block.append(ul);
@@ -1179,6 +1248,24 @@ function renderElementPanel() {
     action.textContent = 'Nueva tarea con esta seleccion';
     action.addEventListener('click', () => startNewTask());
     container.append(action);
+}
+
+/** Marca o desmarca un tramo de una tarea y guarda de inmediato. */
+async function toggleElementDone(task, elementId) {
+    const ref = task.elements.find((e) => e.id === elementId);
+    if (!ref) return;
+    ref.done = !ref.done;
+    ref.doneAt = ref.done ? (ref.doneAt || todayISO()) : null;
+    task.progress = Math.round(progressFromElements(task, state.shapesById));
+    if (task.progress === 100 && task.status !== 'completada') task.status = 'completada';
+    else if (task.progress < 100 && task.status === 'completada') task.status = 'en_curso';
+    task.updatedAt = Date.now();
+
+    await saveTask(task);
+    applyTaskHighlight(task);
+    renderTasks();
+    renderElementPanel();
+    toast(ref.done ? `Tramo marcado como hecho (${task.progress}% de la tarea).` : 'Tramo marcado como pendiente.');
 }
 
 /** Botonera de division / union para la seleccion actual. */
@@ -1685,6 +1772,7 @@ function startNewTask(extra = {}) {
 
 function openTaskModal(task, isNew = false) {
     state.draft = JSON.parse(JSON.stringify(task));
+    applyTaskHighlight(state.draft);
     state.draft.isNew = isNew;
     $('#task-modal-title').textContent = isNew ? 'Nueva tarea' : 'Editar tarea';
     $('#task-title').value = task.title || '';
@@ -1705,6 +1793,7 @@ function openTaskModal(task, isNew = false) {
 function closeTaskModal() {
     $('#task-modal').classList.add('hidden');
     state.draft = null;
+    clearTaskHighlight();
 }
 
 function setProgressInputs(value) {
@@ -1713,18 +1802,53 @@ function setProgressInputs(value) {
     renderTaskQuantity();
 }
 
-/** Muestra cuanta obra representa la tarea, que es la base del avance real. */
+/**
+ * Totales de la tarea y su avance. Con tramos vinculados el porcentaje no se
+ * escribe: sale de los tramos marcados, ponderado por su longitud.
+ */
 function renderTaskQuantity() {
-    const label = $('#task-quantity');
     if (!state.draft) return;
-    const quantity = taskQuantity(state.draft, state.shapesById);
+    const draft = state.draft;
+    const quantity = taskQuantity(draft, state.shapesById, state.unitScale);
     const units = state.project.units === 'sin unidad' ? '' : ` ${state.project.units}`;
+    const byElements = draft.elements.length > 0;
+
+    // La barra manual solo queda para tareas sin tramos (un punto suelto).
+    $('#progress-manual').hidden = byElements;
+    $('#progress-computed').hidden = !byElements;
+
     const parts = [];
-    if (quantity.length) parts.push(`longitud ${formatNumber(quantity.length)}${units}`);
-    if (quantity.area) parts.push(`area ${formatNumber(quantity.area)}${units}²`);
-    label.textContent = parts.length
-        ? `Cantidad vinculada: ${parts.join(' · ')}. El avance se pondera con esta cantidad.`
-        : 'Sin elementos vinculados: la tarea solo cuenta por unidad.';
+    if (quantity.count) parts.push(`${quantity.count} tramo(s)`);
+    if (quantity.length) parts.push(`${formatNumber(quantity.length)}${units}`);
+    if (quantity.area) parts.push(`${formatNumber(quantity.area)}${units}²`);
+    if (quantity.volume) parts.push(`${formatNumber(quantity.volume)} m³`);
+    $('#task-quantity').textContent = parts.length
+        ? `Total: ${parts.join(' · ')}`
+        : 'Sin tramos vinculados: la tarea cuenta por unidad.';
+
+    if (!byElements) return;
+
+    const pct = draft.status === 'completada' ? 100 : progressFromElements(draft, state.shapesById);
+    $('#computed-bar').style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    $('#computed-pct').textContent = `${Math.round(pct)}%`;
+
+    const done = [];
+    done.push(`${quantity.done.count} de ${quantity.count} tramos`);
+    if (quantity.length) done.push(`${formatNumber(quantity.done.length)} de ${formatNumber(quantity.length)}${units}`);
+    if (quantity.volume) done.push(`${formatNumber(quantity.done.volume)} de ${formatNumber(quantity.volume)} m³`);
+    $('#computed-detail').textContent = done.join(' · ');
+
+    const rate = performance(draft, state.shapesById, state.unitScale);
+    const rateBox = $('#task-performance');
+    if (rate.days) {
+        const bits = [`${formatNumber(rate.perDay)}${units}/dia en ${rate.days} dia(s) con avance`];
+        if (rate.volumePerDay) bits.push(`${formatNumber(rate.volumePerDay)} m³/dia`);
+        if (rate.daysLeft) bits.push(`faltan ${formatNumber(rate.remaining)}${units} ≈ ${rate.daysLeft} dia(s)`);
+        rateBox.textContent = bits.join(' · ');
+        rateBox.hidden = false;
+    } else {
+        rateBox.hidden = true;
+    }
 }
 
 function renderResourcePicker() {
@@ -1785,35 +1909,134 @@ function renderPickerInto(box, selectedIds, onToggle) {
     }
 }
 
+/** Fecha local en formato YYYY-MM-DD, que es como se guarda el avance. */
+function todayISO() {
+    const now = new Date();
+    const offset = now.getTimezoneOffset() * 60000;
+    return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function measureOf(ref) {
+    const shape = state.shapesById.get(ref.id);
+    return shape ? measure(shape) : null;
+}
+
+/**
+ * Lista de tramos de la tarea: cada uno con su casilla de ejecutado, su medida
+ * y su seccion de excavacion. De aqui sale el avance real de la tarea.
+ */
 function renderLinkedElements() {
     const list = $('#linked-list');
     list.innerHTML = '';
     const elements = state.draft.elements;
+    $('#linked-count').textContent = elements.length ? `${elements.length} tramo(s)` : '';
+    $('#btn-apply-section').hidden = elements.length < 2;
+
     if (!elements.length) {
         const anchor = state.draft.anchor;
         list.innerHTML = anchor
             ? `<li class="linked-item"><span class="grow">Punto libre ${formatNumber(anchor.x)} , ${formatNumber(anchor.y)}</span></li>`
-            : '<li class="empty">Sin elementos. La tarea quedara sin ubicacion en el plano.</li>';
+            : '<li class="empty">Sin tramos. Usa "+ Del plano" para ir tocando los elementos de esta tarea.</li>';
         return;
     }
+
+    const units = state.project.units === 'sin unidad' ? '' : ` ${state.project.units}`;
+
     elements.forEach((element, index) => {
         const item = document.createElement('li');
-        item.className = 'linked-item';
-        const label = document.createElement('span');
-        label.className = 'grow';
-        label.textContent = `${KIND_LABELS[element.kind] || element.kind} · ${element.layer}`;
+        item.className = 'linked-item element-row';
+        if (element.done) item.classList.add('done');
+
+        const check = document.createElement('label');
+        check.className = 'element-check';
+        check.title = 'Marcar el tramo como ejecutado';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = !!element.done;
+        input.addEventListener('change', () => {
+            element.done = input.checked;
+            element.doneAt = input.checked ? (element.doneAt || todayISO()) : null;
+            renderLinkedElements();
+            renderTaskQuantity();
+            applyTaskHighlight(state.draft);
+        });
+        check.append(input);
+
+        const main = document.createElement('div');
+        main.className = 'element-main';
+
+        const title = document.createElement('span');
+        title.className = 'element-title';
+        const m = measureOf(element);
+        const size = m ? ` · ${formatNumber(m.length)}${units}` : '';
+        title.textContent = `${KIND_LABELS[element.kind] || element.kind} · ${element.layer}${size}`;
+        main.append(title);
+
+        // Seccion: solo tiene sentido en tramos lineales.
+        if (m && !m.area) {
+            const section = document.createElement('div');
+            section.className = 'element-section';
+            const width = numberInput(element.width, 'ancho m', (value) => {
+                element.width = value;
+                renderLinkedElements();
+                renderTaskQuantity();
+            });
+            const depth = numberInput(element.depth, 'prof m', (value) => {
+                element.depth = value;
+                renderLinkedElements();
+                renderTaskQuantity();
+            });
+            const times = document.createElement('span');
+            times.className = 'muted';
+            times.textContent = '×';
+            section.append(width, times, depth);
+
+            if (element.width > 0 && element.depth > 0) {
+                const volume = document.createElement('span');
+                volume.className = 'element-volume';
+                volume.textContent =
+                    `= ${formatNumber(m.length * state.unitScale * element.width * element.depth)} m³`;
+                section.append(volume);
+            }
+            main.append(section);
+        }
+
+        if (element.done && element.doneAt) {
+            const when = document.createElement('span');
+            when.className = 'element-date';
+            when.textContent = `Ejecutado el ${element.doneAt}`;
+            main.append(when);
+        }
+
         const remove = document.createElement('button');
         remove.type = 'button';
-        remove.title = 'Quitar';
+        remove.className = 'element-remove';
+        remove.title = 'Quitar de la tarea';
         remove.textContent = '✕';
         remove.addEventListener('click', () => {
             state.draft.elements.splice(index, 1);
             renderLinkedElements();
             renderTaskQuantity();
         });
-        item.append(label, remove);
+
+        item.append(check, main, remove);
         list.append(item);
     });
+}
+
+function numberInput(value, placeholder, onChange) {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = '0';
+    input.step = '0.05';
+    input.inputMode = 'decimal';
+    input.placeholder = placeholder;
+    input.value = value === null || value === undefined ? '' : String(value);
+    input.addEventListener('change', () => {
+        const parsed = Number(input.value);
+        onChange(Number.isFinite(parsed) && parsed > 0 ? parsed : null);
+    });
+    return input;
 }
 
 function wireTaskForm() {
@@ -1843,6 +2066,10 @@ function wireTaskForm() {
         draft.description = $('#task-description').value.trim();
         const progress = Number($('#task-progress').value);
         draft.progress = Number.isFinite(progress) ? Math.max(0, Math.min(100, Math.round(progress))) : 0;
+        // Con tramos vinculados manda lo marcado en el plano, no el numero escrito.
+        if (tracksElements(draft)) {
+            draft.progress = Math.round(progressFromElements(draft, state.shapesById));
+        }
         if (draft.status === 'completada') draft.progress = 100;
         if (!draft.title) return;
 
@@ -1852,7 +2079,9 @@ function wireTaskForm() {
         await saveTask(draft);
         const index = state.tasks.findIndex((t) => t.id === draft.id);
         if (index >= 0) state.tasks[index] = draft; else state.tasks.push(draft);
+        const saved = draft;
         closeTaskModal();
+        applyTaskHighlight(saved);
         renderTasks();
         renderResources();
         renderElementPanel();
@@ -1871,21 +2100,44 @@ function wireTaskForm() {
         toast('Tarea eliminada.');
     });
 
+    // Modo continuo: el formulario se aparta y se van tocando tramos.
     $('#btn-add-element').addEventListener('click', async () => {
         const draft = state.draft;
         $('#task-modal').classList.add('hidden');
-        const result = await startPick('Toca el elemento que quieres vincular', { allowPoint: true });
-        if (result && result.shape) {
-            const shape = result.shape;
-            if (!draft.elements.some((e) => e.id === shape.id)) {
-                draft.elements.push(elementRef(shape, anchorOf(shape)));
+        const banner = () => {
+            $('#pick-text').textContent = `Toca los tramos de la tarea — agregados: ${draft.elements.length}`;
+        };
+        await startPick('Toca los tramos de la tarea — agregados: ' + draft.elements.length, {
+            multi: true,
+            onEach: (shape) => {
+                const index = draft.elements.findIndex((e) => e.id === shape.id);
+                // Volver a tocar un tramo ya agregado lo quita, por si te equivocas.
+                if (index >= 0) draft.elements.splice(index, 1);
+                else draft.elements.push(elementRef(shape, anchorOf(shape)));
+                banner();
+                viewer.setSelection(draft.elements.map((e) => e.id));
             }
-        } else if (result && result.point) {
-            draft.anchor = { x: result.point.x, y: result.point.y };
-        }
+        });
+        viewer.setSelection([]);
         $('#task-modal').classList.remove('hidden');
         renderLinkedElements();
         renderTaskQuantity();
+    });
+
+    // Copiar la seccion del primer tramo al resto ahorra escribirla 12 veces.
+    $('#btn-apply-section').addEventListener('click', () => {
+        const elements = state.draft.elements;
+        const first = elements[0];
+        if (!first || !(first.width > 0) || !(first.depth > 0)) {
+            return toast('Escribe primero el ancho y la profundidad del primer tramo.');
+        }
+        for (const element of elements) {
+            element.width = first.width;
+            element.depth = first.depth;
+        }
+        renderLinkedElements();
+        renderTaskQuantity();
+        toast(`Seccion aplicada a ${elements.length} tramos.`);
     });
 }
 

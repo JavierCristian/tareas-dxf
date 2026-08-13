@@ -121,7 +121,8 @@
                 </div>
                 <ul id="task-list" class="task-list"></ul>
                 <div class="panel-footer">
-                    <button class="ghost small" id="btn-export-csv">Exportar CSV</button>
+                    <button class="ghost small" id="btn-export-csv">Tareas CSV</button>
+                    <button class="ghost small" id="btn-export-elements">Tramos CSV</button>
                     <button class="ghost small" id="btn-export-json">Copia .json</button>
                 </div>
             </section>
@@ -219,14 +220,35 @@
                     <input type="date" id="task-due">
                 </label>
             </div>
-            <label class="progress-field">Avance
-                <div class="progress-input">
+            <div class="linked">
+                <div class="linked-head">
+                    <strong>Tramos vinculados</strong>
+                    <span id="linked-count" class="muted"></span>
+                    <button type="button" class="ghost small" id="btn-add-element">+ Del plano</button>
+                </div>
+                <ul id="linked-list" class="linked-list"></ul>
+                <button type="button" class="ghost small" id="btn-apply-section" hidden>
+                    Aplicar la seccion del primero a todos
+                </button>
+            </div>
+            <div class="progress-field">
+                <span class="field-label">Avance</span>
+                <label class="progress-input" id="progress-manual">
                     <input type="range" id="task-progress-range" min="0" max="100" step="5" value="0">
                     <input type="number" id="task-progress" min="0" max="100" step="1" value="0" inputmode="numeric">
                     <span class="unit">%</span>
+                </label>
+                <div id="progress-computed" hidden>
+                    <div class="progress-head">
+                        <span>Segun los tramos marcados</span>
+                        <strong id="computed-pct">0%</strong>
+                    </div>
+                    <div class="progress-bar"><span id="computed-bar"></span></div>
+                    <small id="computed-detail" class="muted"></small>
                 </div>
                 <small id="task-quantity" class="muted"></small>
-            </label>
+                <small id="task-performance" class="muted" hidden></small>
+            </div>
             <div class="linked">
                 <div class="linked-head">
                     <strong>Personal y maquinaria</strong>
@@ -237,13 +259,6 @@
             <label>Descripcion
                 <textarea id="task-description" rows="3" maxlength="2000" placeholder="Detalle, materiales, observaciones"></textarea>
             </label>
-            <div class="linked">
-                <div class="linked-head">
-                    <strong>Elementos vinculados</strong>
-                    <button type="button" class="ghost small" id="btn-add-element">+ Del plano</button>
-                </div>
-                <ul id="linked-list" class="linked-list"></ul>
-            </div>
             <footer class="modal-foot">
                 <button type="button" class="btn danger" id="btn-delete-task" hidden>Eliminar</button>
                 <div>

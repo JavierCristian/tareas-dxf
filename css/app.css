@@ -35,6 +35,7 @@ html, body {
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 .hidden { display: none !important; }
+[hidden] { display: none !important; }
 .muted { color: var(--muted); }
 .empty { color: var(--muted); font-size: 14px; padding: 12px 2px; }
 
@@ -551,3 +552,53 @@ textarea { resize: vertical; }
 .places-block { border-top: 1px solid var(--line); margin-top: 4px; padding: 12px 12px 0; display: grid; gap: 8px; }
 .places-block .linked-head strong { font-size: 13.5px; }
 .places-block .resource-list { padding: 0; }
+
+/* --------------------- Tramos vinculados a una tarea ---------------------- */
+
+.linked-head .muted { font-size: 12px; margin-left: auto; margin-right: 8px; }
+.field-label { font-size: 13px; color: var(--muted); }
+
+.element-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: start;
+    gap: 10px;
+    padding: 9px 10px;
+}
+.element-row.done { border-color: rgba(34, 197, 94, 0.45); background: rgba(34, 197, 94, 0.07); }
+.element-check { display: flex; align-items: center; padding-top: 2px; }
+.element-check input { width: 20px; height: 20px; accent-color: #22c55e; margin: 0; }
+.element-main { display: grid; gap: 5px; min-width: 0; }
+.element-title { font-size: 13px; word-break: break-word; }
+.element-row.done .element-title { color: #86efac; }
+.element-section { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.element-section input {
+    width: 76px;
+    padding: 5px 7px;
+    font-size: 12.5px;
+    min-height: 32px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #0b1118;
+    color: var(--text);
+}
+.element-volume { font-size: 12px; color: var(--muted); }
+.element-date { font-size: 11.5px; color: #86efac; }
+.element-remove { border: 0; background: transparent; color: var(--muted); font-size: 16px; padding: 2px 4px; }
+
+#progress-computed { display: grid; gap: 5px; }
+#progress-computed .progress-head { font-size: 12.5px; }
+#task-performance { color: #7fd1ff; }
+
+.task-mini-list li { display: flex; align-items: center; gap: 6px; }
+.mark-done {
+    flex: none;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--muted);
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 12px;
+    min-height: 32px;
+}
+.mark-done.on { border-color: rgba(34, 197, 94, 0.5); color: #86efac; background: rgba(34, 197, 94, 0.1); }
