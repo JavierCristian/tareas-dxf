@@ -752,6 +752,21 @@ const UNIT_NAMES = {
     0: 'sin unidad', 1: 'pulgadas', 2: 'pies', 4: 'mm', 5: 'cm', 6: 'm', 7: 'km', 9: 'micras', 10: 'yardas'
 };
 
+/** Metros que vale una unidad del dibujo, para poder cubicar en m³. */
+const UNIT_TO_METERS = {
+    'sin unidad': 1, pulgadas: 0.0254, pies: 0.3048, mm: 0.001,
+    cm: 0.01, m: 1, km: 1000, micras: 1e-6, yardas: 0.9144
+};
+
+/**
+ * Factor a metros. Si el DXF no declara unidades se asume que ya viene en
+ * metros, que es lo habitual en planos de obra civil.
+ */
+export function metersPerUnit(units) {
+    const factor = UNIT_TO_METERS[units];
+    return Number.isFinite(factor) ? factor : 1;
+}
+
 /**
  * Lee un DXF completo y devuelve la escena lista para dibujar.
  * @param {string} text contenido del archivo

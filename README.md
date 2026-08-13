@@ -12,11 +12,10 @@ sin servidor ni base de datos remota.
    despues, desde la pestana *Capas*.
 3. **Dibuja el plano** en un lienzo con desplazamiento, zoom (rueda, botones o
    pellizco) y seleccion por toque o clic.
-4. **Registra tareas** asociadas a uno o varios elementos (puntos, lineas,
-   polilineas, circulos, arcos, textos, bloques) o a un punto libre del plano.
-   Cada tarea tiene titulo, estado, prioridad, responsable, vencimiento,
-   avance en porcentaje, personal y maquinaria asignados, descripcion y los
-   elementos vinculados.
+4. **Registra tareas** asociadas a tantos elementos del plano como haga falta
+   (puntos, lineas, polilineas, circulos, arcos, textos, bloques) o a un punto
+   libre. Cada tarea tiene titulo, estado, prioridad, responsable, vencimiento,
+   personal y maquinaria asignados, descripcion y sus tramos (ver mas abajo).
 5. **Divide y une elementos del plano** para que una actividad corresponda al
    tramo real ejecutado (ver mas abajo).
 6. **Lleva el registro de recursos**: personal y maquinaria de la obra, con
@@ -30,6 +29,32 @@ sin servidor ni base de datos remota.
 10. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar tareas,
     recursos y ubicaciones a CSV, o una copia completa en `.json` que incluye el
     plano.
+
+## Tareas por tramos
+
+Una excavacion o un tendido rara vez son un solo elemento del dibujo. Una tarea
+agrupa **todos los tramos que se le asignen**, y cada tramo lleva sus propios
+datos:
+
+- **Agregar tramos**: el boton *+ Del plano* aparta el formulario y deja el
+  plano libre; se van tocando los tramos uno a uno y un contador muestra
+  cuantos llevas. Volver a tocar un tramo ya agregado lo quita. Se cierra con
+  *Listo*.
+- **Avance sin estimar**: cada tramo se marca como ejecutado y el porcentaje de
+  la tarea sale ponderado por la longitud real de cada uno, no por el numero de
+  tramos. La barra manual solo queda para tareas sin tramos. Si un tramo esta a
+  medias, se divide (ver *Divisiones y uniones*) y se marca la parte hecha.
+- **Cubicacion**: cada tramo admite ancho y profundidad, y la tarea calcula
+  m³ = longitud × ancho × profundidad. El boton *aplicar la seccion del primero
+  a todos* evita escribir la misma seccion doce veces. La longitud se convierte
+  a metros segun las unidades declaradas en el DXF.
+- **Rendimiento**: al marcar un tramo se guarda la fecha. Con eso se calculan
+  metros y m³ por dia sobre los dias en que hubo avance —los dias parados no
+  castigan el numero— y se estima cuantos dias faltan.
+- **En el plano**: al seleccionar una tarea sus tramos se resaltan, en verde los
+  ejecutados y en el color del estado los pendientes. Ademas, tocando un tramo
+  del plano aparece en la pestana *Elemento* un boton **Marcar hecho**, para
+  registrar el avance parado frente a la obra.
 
 ## Recursos repartidos en el plano
 
@@ -117,7 +142,7 @@ js/dxf.js               lector DXF y armado de la escena
 js/scene.js             indice espacial, seleccion y medidas
 js/viewer.js            lienzo, camara y gestos
 js/db.js                almacenamiento local (IndexedDB / localStorage)
-js/tasks.js             modelo de tareas, avance, filtros y exportacion
+js/tasks.js             modelo de tareas, tramos, avance, cubicacion y exportacion
 js/resources.js         modelo de personal y maquinaria
 js/places.js            puntos del plano donde se ubican los recursos
 js/edits.js             geometria de divisiones y uniones

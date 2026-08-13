@@ -26,6 +26,7 @@ export class Viewer {
         this.selection = new Set();
         this.markers = [];
         this.highlight = null;
+        this.taskHighlight = null;
         this.dirty = false;
         this.pointers = new Map();
         this.gesture = null;
@@ -388,6 +389,7 @@ export class Viewer {
             ctx.restore();
         }
 
+        this.drawTaskHighlight(ctx);
         this.drawSelection(ctx);
         this.drawMarkers(ctx);
         this.drawScaleBar(ctx, width, height);
@@ -416,6 +418,47 @@ export class Viewer {
         for (let i = 2; i < pts.length; i += 2) {
             ctx.lineTo(pts[i] * scale + ox, oy - pts[i + 1] * scale);
         }
+    }
+
+    /**
+     * Resalta los tramos de una tarea: verde los ejecutados, el color del
+     * estado los pendientes. Se dibuja como un halo grueso bajo el trazo.
+     */
+    setTaskHighlight(map) {
+        this.taskHighlight = map && map.size ? map : null;
+        this.requestRender();
+    }
+
+    drawTaskHighlight(ctx) {
+        if (!this.taskHighlight) return;
+        const byColor = new Map();
+        for (const [id, color] of this.taskHighlight) {
+            const shape = this.byId.get(id);
+            if (!shape || !this.isVisible(shape)) continue;
+            if (!byColor.has(color)) byColor.set(color, []);
+            byColor.get(color).push(shape);
+        }
+        if (!byColor.size) return;
+
+        ctx.save();
+        ctx.lineWidth = 6;
+        ctx.lineCap = 'round';
+        ctx.globalAlpha = 0.45;
+        for (const [color, shapes] of byColor) {
+            ctx.strokeStyle = color;
+            ctx.beginPath();
+            for (const shape of shapes) {
+                if (shape.kind === 'point' || shape.kind === 'text') {
+                    const p = this.worldToScreen(shape.pts[0], shape.pts[1]);
+                    ctx.moveTo(p.x + 8, p.y);
+                    ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+                } else {
+                    this.tracePath(ctx, shape, false);
+                }
+            }
+            ctx.stroke();
+        }
+        ctx.restore();
     }
 
     drawSelection(ctx) {
