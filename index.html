@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0b0f14">
+<meta name="description" content="Aplicacion para importar planos DXF, elegir capas y registrar tareas sobre los elementos del plano.">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tareas DXF">
+<title>Tareas DXF</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<!-- ------------------------------ Pantalla inicial ------------------------------ -->
+<section id="welcome" class="screen">
+    <div class="welcome-card">
+        <div class="brand">
+            <img src="icons/icon.svg" alt="" width="52" height="52">
+            <div>
+                <h1>Tareas DXF</h1>
+                <p>Importa un plano, elige las capas y registra tareas sobre puntos, lineas y polilineas.</p>
+            </div>
+        </div>
+
+        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Abrir archivo DXF">
+            <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path d="M12 16V4m0 0L8 8m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <strong>Abrir archivo DXF</strong>
+            <span>Tocar para buscar, o arrastrar el archivo aqui</span>
+        </div>
+        <input type="file" id="file-input" accept=".dxf,application/dxf,text/plain" hidden>
+
+        <div class="welcome-actions">
+            <button class="ghost" id="btn-import-project">Restaurar copia (.json)</button>
+            <input type="file" id="import-input" accept=".json,application/json" hidden>
+        </div>
+
+        <div class="recent">
+            <h2>Proyectos guardados</h2>
+            <ul id="recent-list" class="recent-list"><li class="empty">Todavia no hay proyectos en este dispositivo.</li></ul>
+        </div>
+
+        <p class="foot">Funciona sin conexion. Todo se guarda en este dispositivo (<span id="storage-mode">IndexedDB</span>).</p>
+    </div>
+</section>
+
+<!-- --------------------------------- Aplicacion --------------------------------- -->
+<div id="app" class="app hidden">
+    <header class="topbar">
+        <button class="icon-btn" id="btn-home" title="Proyectos" aria-label="Proyectos">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+        <div class="titles">
+            <strong id="project-name">Proyecto</strong>
+            <span id="project-meta"></span>
+        </div>
+        <div class="topbar-actions">
+            <button class="icon-btn" id="btn-zoom-fit" title="Encuadrar todo" aria-label="Encuadrar todo">
+                <svg viewBox="0 0 24 24" width="20" height="20"><path d="M4 9V5h4M20 9V5h-4M4 15v4h4m12-4v4h-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="btn primary" id="btn-new-task">+ Tarea</button>
+            <button class="icon-btn only-mobile" id="btn-toggle-panel" title="Panel" aria-label="Panel">
+                <svg viewBox="0 0 24 24" width="20" height="20"><path d="M4 6h16M4 12h10M4 18h13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </button>
+        </div>
+    </header>
+
+    <main class="workspace">
+        <div class="viewport">
+            <canvas id="canvas"></canvas>
+
+            <div class="map-tools">
+                <button class="tool" id="btn-zoom-in" aria-label="Acercar">+</button>
+                <button class="tool" id="btn-zoom-out" aria-label="Alejar">−</button>
+                <button class="tool" id="btn-multi" aria-label="Seleccion multiple" title="Seleccion multiple">⧉</button>
+            </div>
+
+            <div id="pick-banner" class="pick-banner hidden">
+                <span id="pick-text">Toca un elemento del plano</span>
+                <button class="ghost small" id="btn-cancel-pick">Cancelar</button>
+            </div>
+
+            <div id="selection-card" class="selection-card hidden">
+                <div class="selection-info">
+                    <strong id="selection-title">Elemento</strong>
+                    <span id="selection-meta"></span>
+                </div>
+                <div class="selection-buttons">
+                    <button class="btn primary small" id="btn-task-from-selection">Nueva tarea</button>
+                    <button class="btn small" id="btn-clear-selection">Quitar</button>
+                </div>
+            </div>
+
+            <div id="toast" class="toast hidden"></div>
+        </div>
+
+        <aside id="panel" class="panel">
+            <div class="panel-handle" id="panel-handle"></div>
+            <nav class="tabs" role="tablist">
+                <button class="tab active" data-tab="tareas" role="tab">Tareas</button>
+                <button class="tab" data-tab="capas" role="tab">Capas</button>
+                <button class="tab" data-tab="elemento" role="tab">Elemento</button>
+            </nav>
+
+            <section class="tab-panel active" data-panel="tareas">
+                <div id="task-summary" class="summary"></div>
+                <div class="filters">
+                    <input type="search" id="filter-text" placeholder="Buscar tarea, responsable o capa">
+                    <div class="filter-row">
+                        <select id="filter-status"><option value="todas">Todos los estados</option></select>
+                        <select id="filter-layer"><option value="todas">Todas las capas</option></select>
+                    </div>
+                </div>
+                <ul id="task-list" class="task-list"></ul>
+                <div class="panel-footer">
+                    <button class="ghost small" id="btn-export-csv">Exportar CSV</button>
+                    <button class="ghost small" id="btn-export-json">Copia .json</button>
+                </div>
+            </section>
+
+            <section class="tab-panel" data-panel="capas">
+                <div class="layer-actions">
+                    <button class="ghost small" id="btn-layers-all">Ver todas</button>
+                    <button class="ghost small" id="btn-layers-none">Ocultar todas</button>
+                    <button class="ghost small" id="btn-layers-import">Importar capas…</button>
+                </div>
+                <ul id="layer-list" class="layer-list"></ul>
+            </section>
+
+            <section class="tab-panel" data-panel="elemento">
+                <div id="element-detail" class="element-detail">
+                    <p class="empty">Toca un elemento del plano para ver sus datos y sus tareas.</p>
+                </div>
+            </section>
+        </aside>
+    </main>
+</div>
+
+<!-- ------------------------------ Dialogo de capas ------------------------------ -->
+<div id="layers-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="layers-modal-title">
+    <div class="modal-card">
+        <header class="modal-head">
+            <h2 id="layers-modal-title">Capas del archivo</h2>
+            <button class="icon-btn" data-close="layers-modal" aria-label="Cerrar">✕</button>
+        </header>
+        <p class="modal-hint">Elige las capas que quieres importar. Podras agregar mas despues.</p>
+        <div class="modal-toolbar">
+            <input type="search" id="layers-modal-search" placeholder="Filtrar capas">
+            <button class="ghost small" id="layers-modal-all">Todas</button>
+            <button class="ghost small" id="layers-modal-none">Ninguna</button>
+        </div>
+        <ul id="layers-modal-list" class="layer-pick-list"></ul>
+        <footer class="modal-foot">
+            <span id="layers-modal-count" class="muted"></span>
+            <div>
+                <button class="btn" data-close="layers-modal">Cancelar</button>
+                <button class="btn primary" id="layers-modal-accept">Importar</button>
+            </div>
+        </footer>
+    </div>
+</div>
+
+<!-- ------------------------------ Dialogo de tarea ------------------------------ -->
+<div id="task-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="task-modal-title">
+    <div class="modal-card">
+        <header class="modal-head">
+            <h2 id="task-modal-title">Nueva tarea</h2>
+            <button class="icon-btn" data-close="task-modal" aria-label="Cerrar">✕</button>
+        </header>
+        <form id="task-form" class="form">
+            <label>Titulo
+                <input type="text" id="task-title" required maxlength="120" placeholder="Ej: Instalar cerradura de acceso">
+            </label>
+            <div class="form-row">
+                <label>Estado
+                    <select id="task-status"></select>
+                </label>
+                <label>Prioridad
+                    <select id="task-priority"></select>
+                </label>
+            </div>
+            <div class="form-row">
+                <label>Responsable
+                    <input type="text" id="task-assignee" maxlength="60" placeholder="Nombre">
+                </label>
+                <label>Vencimiento
+                    <input type="date" id="task-due">
+                </label>
+            </div>
+            <label>Descripcion
+                <textarea id="task-description" rows="3" maxlength="2000" placeholder="Detalle, materiales, observaciones"></textarea>
+            </label>
+            <div class="linked">
+                <div class="linked-head">
+                    <strong>Elementos vinculados</strong>
+                    <button type="button" class="ghost small" id="btn-add-element">+ Del plano</button>
+                </div>
+                <ul id="linked-list" class="linked-list"></ul>
+            </div>
+            <footer class="modal-foot">
+                <button type="button" class="btn danger" id="btn-delete-task" hidden>Eliminar</button>
+                <div>
+                    <button type="button" class="btn" data-close="task-modal">Cancelar</button>
+                    <button type="submit" class="btn primary">Guardar</button>
+                </div>
+            </footer>
+        </form>
+    </div>
+</div>
+
+<!-- ------------------------------ Superposicion ------------------------------ -->
+<div id="loading" class="loading hidden">
+    <div class="loading-card">
+        <div class="spinner"></div>
+        <strong id="loading-text">Leyendo archivo…</strong>
+    </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
