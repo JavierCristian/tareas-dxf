@@ -169,7 +169,8 @@ export class Viewer {
         for (let i = this.markers.length - 1; i >= 0; i--) {
             const marker = this.markers[i];
             const p = this.worldToScreen(marker.x, marker.y);
-            if (Math.hypot(p.x - screenX, p.y - (screenY + 14)) <= 18) return marker;
+            const offset = marker.kind === 'place' ? 16 : 14;
+            if (Math.hypot(p.x - screenX, p.y - (screenY + offset)) <= 18) return marker;
         }
         return null;
     }
@@ -453,6 +454,10 @@ export class Viewer {
         for (const marker of this.markers) {
             const p = this.worldToScreen(marker.x, marker.y);
             if (p.x < -40 || p.y < -40 || p.x > this.size.width + 40 || p.y > this.size.height + 40) continue;
+            if (marker.kind === 'place') {
+                this.drawPlaceMarker(ctx, p, marker);
+                continue;
+            }
             const y = p.y - 14;
             ctx.beginPath();
             ctx.moveTo(p.x, p.y);
@@ -473,6 +478,53 @@ export class Viewer {
             ctx.fillText(marker.label, p.x, y + 1);
         }
         ctx.restore();
+    }
+
+    /**
+     * Los recursos ubicados en el plano se dibujan como una placa cuadrada con
+     * su icono, para no confundirlos con los marcadores redondos de tareas.
+     */
+    drawPlaceMarker(ctx, p, marker) {
+        const y = p.y - 16;
+        const half = 13;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x - 5, y + half - 1);
+        ctx.lineTo(p.x + 5, y + half - 1);
+        ctx.closePath();
+        ctx.fillStyle = marker.color;
+        ctx.fill();
+
+        ctx.beginPath();
+        const radius = 6;
+        const left = p.x - half;
+        const top = y - half;
+        const size = half * 2;
+        if (ctx.roundRect) ctx.roundRect(left, top, size, size, radius);
+        else ctx.rect(left, top, size, size);
+        ctx.fillStyle = marker.color;
+        ctx.fill();
+        ctx.lineWidth = marker.active ? 3 : 1.5;
+        ctx.strokeStyle = marker.active ? '#ffffff' : 'rgba(0,0,0,0.45)';
+        ctx.stroke();
+
+        ctx.font = '15px system-ui, "Apple Color Emoji", "Segoe UI Emoji", sans-serif';
+        ctx.fillStyle = '#0b0f14';
+        ctx.fillText(marker.label, p.x, y + 1);
+
+        // Cuando hay mas de un recurso en el mismo punto se indica la cantidad.
+        if (marker.badge) {
+            ctx.beginPath();
+            ctx.arc(p.x + half - 2, top + 2, 8, 0, Math.PI * 2);
+            ctx.fillStyle = '#0b0f14';
+            ctx.fill();
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = marker.color;
+            ctx.stroke();
+            ctx.fillStyle = '#e6edf5';
+            ctx.font = 'bold 10px system-ui, sans-serif';
+            ctx.fillText(marker.badge, p.x + half - 2, top + 3);
+        }
     }
 
     drawScaleBar(ctx, width, height) {

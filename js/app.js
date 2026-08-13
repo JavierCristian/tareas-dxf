@@ -10,7 +10,8 @@ import { anchorOf, measure } from './scene.js';
 import {
     saveProject, getProject, listProjects, deleteProject,
     saveTask, saveTasks, listTasks, deleteTask, newId, storageMode,
-    saveResource, saveResources, listResources, deleteResource
+    saveResource, saveResources, listResources, deleteResource,
+    savePlace, savePlaces, listPlaces, deletePlace
 } from './db.js';
 import {
     STATUSES, PRIORITIES, statusOf, priorityOf, createTask, elementRef, taskAnchor,
@@ -21,6 +22,9 @@ import {
     RESOURCE_TYPES, ROLE_HINTS, CODE_HINTS, typeOf, createResource, normalizeResource,
     workload, resourcesToCsv
 } from './resources.js';
+import {
+    createPlace, normalizePlace, placeIcon, placeColor, placeTitle, placesOf, placesToCsv
+} from './places.js';
 import {
     applyEdits, makeEdit, removeEdit, editOfShape, canSplit, splitOpen, splitClosed,
     equalCuts, projectOnPath, pathLength, chain, joinTolerance, MIN_PART_RATIO
@@ -39,11 +43,13 @@ const state = {
     layers: new Map(),      // nombre -> {name, color, visible, imported, count, kinds}
     tasks: [],
     resources: [],
+    places: [],
     selection: [],          // ids de figuras
     multi: false,
     filters: { text: '', status: 'todas', layer: 'todas', resource: 'todas' },
     draft: null,            // tarea en edicion
     resourceDraft: null,    // recurso en edicion
+    placeDraft: null,       // ubicacion en edicion
     splitTarget: null,      // figura que se esta dividiendo
     pick: null,             // {onPick, message}
     saveViewTimer: null
@@ -73,6 +79,7 @@ function init() {
     wireModals();
     wireTaskForm();
     wireResources();
+    wirePlaces();
     wireSplitModal();
 
     refreshRecent();
@@ -226,7 +233,7 @@ async function importDxfFile(file) {
         if (scene.truncated) {
             toast('El plano es muy grande: se cargo una parte de las entidades.');
         }
-        loadIntoApp(project, scene, [], []);
+        loadIntoApp(project, scene, [], [], []);
     } catch (error) {
         hideLoading();
         console.error(error);
@@ -244,8 +251,9 @@ async function openProject(id) {
         const scene = readDxf(project.dxfText);
         const tasks = await listTasks(id);
         const resources = await listResources(id);
+        const places = await listPlaces(id);
         hideLoading();
-        loadIntoApp(project, scene, tasks, resources);
+        loadIntoApp(project, scene, tasks, resources, places);
     } catch (error) {
         hideLoading();
         console.error(error);
@@ -253,12 +261,13 @@ async function openProject(id) {
     }
 }
 
-function loadIntoApp(project, scene, tasks, resources = []) {
+function loadIntoApp(project, scene, tasks, resources = [], places = []) {
     state.project = project;
     if (!Array.isArray(project.edits)) project.edits = [];
     state.allShapes = scene.shapes;
     state.tasks = tasks;
     state.resources = resources;
+    state.places = places;
     state.selection = [];
     state.filters = { text: '', status: 'todas', layer: 'todas', resource: 'todas' };
     $('#filter-text').value = '';
@@ -523,6 +532,10 @@ function handleTap(local, event) {
 
     const marker = viewer.pickMarkerAt(local.x, local.y);
     if (marker) {
+        if (marker.kind === 'place') {
+            const place = state.places.find((p) => p.id === marker.id);
+            if (place) return openPlaceModal(place, false);
+        }
         const task = state.tasks.find((t) => t.id === marker.id);
         if (task) return openTaskModal(task);
     }
@@ -883,10 +896,11 @@ function wirePanel() {
     $('#btn-export-json').addEventListener('click', () => {
         const json = projectToJson(state.project, state.tasks, {
             includeDxf: true,
-            resources: state.resources
+            resources: state.resources,
+            places: state.places
         });
         download(`${state.project.name}.json`, json, 'application/json');
-        toast('Copia generada (incluye plano, recursos y divisiones).');
+        toast('Copia generada (incluye plano, recursos, ubicaciones y divisiones).');
     });
 }
 
@@ -895,6 +909,7 @@ function renderAll() {
     renderLayerFilter();
     renderResourceFilter();
     renderResources();
+    renderPlaces();
     renderTasks();
     renderSelectionCard();
     renderElementPanel();
@@ -1055,8 +1070,25 @@ function tag(text, danger = false) {
     return element;
 }
 
+function refreshMarkers() {
+    renderMarkers(filterTasks(state.tasks, { ...state.filters, resourceNames: new Map() }));
+}
+
 function renderMarkers(tasks) {
     const markers = [];
+    for (const place of state.places) {
+        const count = (place.resources || []).length;
+        markers.push({
+            id: place.id,
+            kind: 'place',
+            x: place.x,
+            y: place.y,
+            color: placeColor(place, state.resources),
+            label: placeIcon(place, state.resources),
+            badge: count > 1 ? String(count) : '',
+            active: state.placeDraft ? state.placeDraft.id === place.id : false
+        });
+    }
     tasks.forEach((task, index) => {
         const anchor = taskAnchor(task);
         if (!anchor) return;
@@ -1258,6 +1290,7 @@ function renderResources() {
                 <div class="resource-meta"></div>
             </div>
             <div class="task-actions">
+                <button data-place title="Ubicar en el plano" aria-label="Ubicar en el plano">📍</button>
                 <button data-tasks title="Ver sus tareas" aria-label="Ver sus tareas">▤</button>
                 <button data-edit title="Editar" aria-label="Editar">✎</button>
             </div>`;
@@ -1273,6 +1306,21 @@ function renderResources() {
         if (!resource.active) meta.append(tag('Sin actividad'));
         meta.append(tag(entry.total ? `${entry.total} tarea(s) · ${entry.open} abierta(s)` : 'Sin tareas'));
 
+        const located = placesOf(resource.id, state.places);
+        if (located.length) {
+            // Sin etiqueta se muestran las coordenadas: repetir su propio nombre no aporta.
+            const where = located
+                .map((place) => place.label || `${formatNumber(place.x)} , ${formatNumber(place.y)}`)
+                .join(' · ');
+            meta.append(tag(`📍 ${where}`));
+        }
+
+        // El boton 📍 lleva al punto si ya esta ubicado, o pide uno nuevo.
+        item.querySelector('[data-place]').addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (located.length) focusPlace(located[0]);
+            else newPlaceAt([resource.id]);
+        });
         item.querySelector('[data-edit]').addEventListener('click', (e) => {
             e.stopPropagation();
             openResourceModal(resource, false);
@@ -1340,8 +1388,9 @@ function openResourceModal(resource, isNew = false) {
 function closeResourceModal() {
     $('#resource-modal').classList.add('hidden');
     state.resourceDraft = null;
-    // Si se abrio desde una tarea, la lista de asignados debe reflejar el cambio.
+    // Si se abrio desde una tarea o un punto, sus listas deben reflejar el cambio.
     if (state.draft) renderResourcePicker();
+    if (state.placeDraft) renderPlacePicker();
 }
 
 function wireResources() {
@@ -1390,13 +1439,17 @@ function wireResources() {
         if (index >= 0) state.resources[index] = draft; else state.resources.push(draft);
         state.resources.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'es'));
 
-        // Un recurso recien creado desde una tarea se asigna solo.
+        // Un recurso recien creado desde una tarea o un punto se asigna solo.
         if (isNew && state.draft && !state.draft.resources.includes(draft.id)) {
             state.draft.resources.push(draft.id);
+        }
+        if (isNew && state.placeDraft && !state.placeDraft.resources.includes(draft.id)) {
+            state.placeDraft.resources.push(draft.id);
         }
         closeResourceModal();
         renderResources();
         renderResourceFilter();
+        renderPlaces();
         renderTasks();
         toast(isNew ? 'Recurso agregado.' : 'Recurso actualizado.');
     });
@@ -1406,8 +1459,12 @@ function wireResources() {
         if (!draft) return;
         const load = workload(state.resources, state.tasks).get(draft.id);
         const used = load ? load.total : 0;
-        const warning = used
-            ? `Este recurso esta asignado a ${used} tarea(s). Se quitara de todas ellas. ¿Eliminar?`
+        const located = placesOf(draft.id, state.places).length;
+        const parts = [];
+        if (used) parts.push(`${used} tarea(s)`);
+        if (located) parts.push(`${located} punto(s) del plano`);
+        const warning = parts.length
+            ? `Este recurso esta en ${parts.join(' y ')}. Se quitara de ahi. ¿Eliminar?`
             : '¿Eliminar este recurso?';
         if (!confirm(warning)) return;
 
@@ -1422,14 +1479,194 @@ function wireResources() {
             touched.push(task);
         }
         if (touched.length) await saveTasks(touched);
+
+        const movedPlaces = [];
+        for (const place of state.places) {
+            if (!(place.resources || []).includes(draft.id)) continue;
+            place.resources = place.resources.filter((id) => id !== draft.id);
+            movedPlaces.push(place);
+        }
+        if (movedPlaces.length) await savePlaces(movedPlaces);
+
         if (state.draft) state.draft.resources = (state.draft.resources || []).filter((id) => id !== draft.id);
+        if (state.placeDraft) state.placeDraft.resources = state.placeDraft.resources.filter((id) => id !== draft.id);
         if (state.filters.resource === draft.id) state.filters.resource = 'todas';
 
         closeResourceModal();
         renderResources();
         renderResourceFilter();
+        renderPlaces();
         renderTasks();
         toast('Recurso eliminado.');
+    });
+}
+
+/* ------------------------------------------------------------------ */
+/* Ubicaciones: recursos repartidos en el plano                        */
+/* ------------------------------------------------------------------ */
+
+function renderPlaces() {
+    const list = $('#place-list');
+    const count = $('#place-count');
+    list.innerHTML = '';
+    count.textContent = state.places.length ? `${state.places.length} punto(s)` : '';
+
+    if (!state.places.length) {
+        list.innerHTML = '<li class="empty">Sin puntos. Usa "+ Punto en el plano" o el boton 📍 de cada recurso.</li>';
+        return;
+    }
+
+    for (const place of state.places) {
+        const item = document.createElement('li');
+        item.className = 'resource-item';
+        item.innerHTML = `
+            <span class="resource-icon"></span>
+            <div class="resource-main">
+                <strong></strong>
+                <div class="resource-meta"></div>
+            </div>
+            <div class="task-actions">
+                <button data-focus title="Ver en el plano" aria-label="Ver en el plano">◎</button>
+                <button data-edit title="Editar" aria-label="Editar">✎</button>
+            </div>`;
+        item.querySelector('.resource-icon').textContent = placeIcon(place, state.resources);
+        item.querySelector('strong').textContent = placeTitle(place, state.resources);
+
+        const meta = item.querySelector('.resource-meta');
+        const names = (place.resources || []).map((id) => resourceById(id)).filter(Boolean);
+        // Sin etiqueta propia el titulo ya son los recursos: no se repiten aqui.
+        if (place.label) {
+            for (const resource of names) meta.append(tag(`${typeOf(resource.type).icon} ${resource.name}`));
+        }
+        if (!names.length) meta.append(tag('Sin asignar'));
+        meta.append(tag(`${formatNumber(place.x)} , ${formatNumber(place.y)}`));
+        if (place.note) meta.append(tag(place.note.slice(0, 40)));
+
+        item.querySelector('[data-focus]').addEventListener('click', (e) => {
+            e.stopPropagation();
+            focusPlace(place);
+        });
+        item.querySelector('[data-edit]').addEventListener('click', (e) => {
+            e.stopPropagation();
+            openPlaceModal(place, false);
+        });
+        item.addEventListener('click', () => openPlaceModal(place, false));
+        list.append(item);
+    }
+}
+
+function focusPlace(place) {
+    viewer.centerOn(place.x, place.y);
+    togglePanel(false);
+}
+
+/** Pide un punto en el plano y crea la ubicacion ahi. */
+async function newPlaceAt(preselected = []) {
+    const result = await startPick('Toca en el plano donde esta trabajando', { onlyPoint: true });
+    if (!result) return;
+    const place = createPlace(state.project.id, {
+        x: result.point.x,
+        y: result.point.y,
+        resources: [...preselected]
+    });
+    openPlaceModal(place, true);
+}
+
+function openPlaceModal(place, isNew = false) {
+    state.placeDraft = { ...place, resources: [...(place.resources || [])], isNew };
+    $('#place-modal-title').textContent = isNew ? 'Nuevo punto' : 'Punto en el plano';
+    $('#place-label').value = place.label || '';
+    $('#place-note').value = place.note || '';
+    $('#btn-delete-place').hidden = isNew;
+    renderPlacePosition();
+    renderPlacePicker();
+    $('#place-modal').classList.remove('hidden');
+    refreshMarkers();
+    setTimeout(() => $('#place-label').focus(), 50);
+}
+
+function closePlaceModal() {
+    $('#place-modal').classList.add('hidden');
+    state.placeDraft = null;
+    refreshMarkers();
+}
+
+function renderPlacePosition() {
+    const draft = state.placeDraft;
+    if (!draft) return;
+    const units = state.project.units === 'sin unidad' ? '' : ` ${state.project.units}`;
+    $('#place-position').textContent =
+        `Posicion en el plano: ${formatNumber(draft.x)} , ${formatNumber(draft.y)}${units}`;
+}
+
+function renderPlacePicker() {
+    const draft = state.placeDraft;
+    if (!draft) return;
+    renderPickerInto($('#place-resources'), draft.resources, (id, on) => {
+        const list = new Set(draft.resources);
+        if (on) list.add(id); else list.delete(id);
+        draft.resources = [...list];
+    });
+}
+
+function wirePlaces() {
+    $('#btn-new-place').addEventListener('click', () => newPlaceAt());
+
+    $('#btn-move-place').addEventListener('click', async () => {
+        const draft = state.placeDraft;
+        if (!draft) return;
+        $('#place-modal').classList.add('hidden');
+        const result = await startPick('Toca la nueva posicion del punto', { onlyPoint: true });
+        if (result) {
+            draft.x = result.point.x;
+            draft.y = result.point.y;
+        }
+        $('#place-modal').classList.remove('hidden');
+        renderPlacePosition();
+    });
+
+    // Crear el recurso desde aqui lo deja asignado a este punto.
+    $('#btn-place-add-resource').addEventListener('click', () =>
+        openResourceModal(createResource(state.project.id, { type: 'persona' }), true));
+
+    $('#place-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const draft = state.placeDraft;
+        if (!draft) return;
+        draft.label = $('#place-label').value.trim();
+        draft.note = $('#place-note').value.trim();
+
+        const isNew = draft.isNew;
+        delete draft.isNew;
+        draft.projectId = state.project.id;
+        await savePlace(draft);
+        const index = state.places.findIndex((p) => p.id === draft.id);
+        if (index >= 0) state.places[index] = draft; else state.places.push(draft);
+
+        closePlaceModal();
+        renderPlaces();
+        renderResources();
+        toast(isNew ? 'Punto agregado al plano.' : 'Punto actualizado.');
+    });
+
+    $('#btn-delete-place').addEventListener('click', async () => {
+        const draft = state.placeDraft;
+        if (!draft || !confirm('¿Quitar este punto del plano?')) return;
+        await deletePlace(draft.id);
+        state.places = state.places.filter((p) => p.id !== draft.id);
+        closePlaceModal();
+        renderPlaces();
+        renderResources();
+        toast('Punto eliminado.');
+    });
+
+    $('#btn-export-places').addEventListener('click', () => {
+        if (!state.places.length) return toast('No hay ubicaciones para exportar.');
+        download(
+            `${state.project.name}-ubicaciones.csv`,
+            placesToCsv(state.places, state.resources),
+            'text/csv;charset=utf-8'
+        );
     });
 }
 
@@ -1491,15 +1728,26 @@ function renderTaskQuantity() {
 }
 
 function renderResourcePicker() {
-    const box = $('#task-resources');
-    box.innerHTML = '';
     if (!state.draft) return;
-    const assigned = new Set(state.draft.resources || []);
+    renderPickerInto($('#task-resources'), state.draft.resources || [], (id, on) => {
+        const list = new Set(state.draft.resources || []);
+        if (on) list.add(id); else list.delete(id);
+        state.draft.resources = [...list];
+    });
+}
+
+/**
+ * Lista de recursos marcables. La comparten el formulario de tarea y el de
+ * ubicacion, que asignan personal y maquinaria de la misma manera.
+ */
+function renderPickerInto(box, selectedIds, onToggle) {
+    box.innerHTML = '';
+    const assigned = new Set(selectedIds);
 
     if (!state.resources.length) {
         const empty = document.createElement('p');
         empty.className = 'muted';
-        empty.textContent = 'Todavia no hay personal ni maquinaria registrada. Usa "Administrar" para agregar.';
+        empty.textContent = 'Todavia no hay personal ni maquinaria registrada. Usa el boton de arriba para agregar.';
         box.append(empty);
         return;
     }
@@ -1524,9 +1772,7 @@ function renderResourcePicker() {
             input.type = 'checkbox';
             input.checked = assigned.has(resource.id);
             input.addEventListener('change', () => {
-                const list = new Set(state.draft.resources || []);
-                if (input.checked) list.add(resource.id); else list.delete(resource.id);
-                state.draft.resources = [...list];
+                onToggle(resource.id, input.checked);
                 label.classList.toggle('on', input.checked);
             });
 
@@ -1650,6 +1896,9 @@ function wireModals() {
     for (const button of $$('#resource-modal [data-close]')) button.addEventListener('click', closeResourceModal);
     $('#resource-modal').addEventListener('click', (e) => { if (e.target.id === 'resource-modal') closeResourceModal(); });
 
+    for (const button of $$('#place-modal [data-close]')) button.addEventListener('click', closePlaceModal);
+    $('#place-modal').addEventListener('click', (e) => { if (e.target.id === 'place-modal') closePlaceModal(); });
+
     for (const button of $$('#split-modal [data-close]')) button.addEventListener('click', closeSplitModal);
     $('#split-modal').addEventListener('click', (e) => { if (e.target.id === 'split-modal') closeSplitModal(); });
 
@@ -1659,6 +1908,7 @@ function wireModals() {
         // Se cierra siempre el dialogo que esta encima.
         if (!$('#resource-modal').classList.contains('hidden')) return closeResourceModal();
         if (!$('#split-modal').classList.contains('hidden')) return closeSplitModal();
+        if (!$('#place-modal').classList.contains('hidden')) return closePlaceModal();
         if (!$('#task-modal').classList.contains('hidden')) return closeTaskModal();
         const layersModal = $('#layers-modal');
         if (!layersModal.classList.contains('hidden')) layersModal.querySelector('[data-close]').click();
@@ -1677,6 +1927,7 @@ async function importBackup(file) {
         const source = data.proyecto || {};
         const tasks = (data.tareas || []).map((task) => ({ ...task }));
         const resources = (data.recursos || []).map((resource) => ({ ...resource }));
+        const places = (data.ubicaciones || []).map((place) => ({ ...place }));
 
         // Se reasignan los identificadores para poder restaurar la misma copia
         // varias veces sin que un proyecto le pise los datos al anterior.
@@ -1693,6 +1944,12 @@ async function importBackup(file) {
                 task.id = newId('task');
                 task.resources = (task.resources || []).map((id) => map.get(id)).filter(Boolean);
             }
+            for (const place of places) {
+                const fresh = normalizePlace(place, projectId);
+                fresh.id = newId('ubi');
+                fresh.resources = (place.resources || []).map((id) => map.get(id)).filter(Boolean);
+                Object.assign(place, fresh);
+            }
         };
 
         if (!source.dxf) {
@@ -1700,9 +1957,10 @@ async function importBackup(file) {
             if (!existing) throw new Error('La copia no incluye el plano DXF. Importa primero el archivo DXF y vuelve a intentar.');
             rebind(existing.id);
             await saveResources(resources);
+            await savePlaces(places);
             await saveTasks(tasks);
             hideLoading();
-            toast('Tareas y recursos restaurados en el proyecto existente.');
+            toast('Tareas, recursos y ubicaciones restaurados en el proyecto existente.');
             return refreshRecent();
         }
 
@@ -1721,6 +1979,7 @@ async function importBackup(file) {
         await saveProject(project);
         rebind(project.id);
         await saveResources(resources);
+        await savePlaces(places);
         await saveTasks(tasks);
         hideLoading();
         toast('Copia restaurada.');

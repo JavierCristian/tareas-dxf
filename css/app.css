@@ -362,6 +362,8 @@ textarea { resize: vertical; }
     padding: 16px;
     z-index: 40;
 }
+/* El dialogo de recurso puede abrirse encima de una tarea o de un punto. */
+#resource-modal { z-index: 50; }
 .modal-card {
     width: min(560px, 100%);
     max-height: min(88vh, 780px);
@@ -543,3 +545,9 @@ textarea { resize: vertical; }
 .split-option { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: grid; gap: 8px; }
 .split-option label { display: grid; gap: 6px; font-size: 13.5px; }
 .split-option small { line-height: 1.45; }
+
+/* -------------------------- Ubicaciones en el plano ------------------------ */
+
+.places-block { border-top: 1px solid var(--line); margin-top: 4px; padding: 12px 12px 0; display: grid; gap: 8px; }
+.places-block .linked-head strong { font-size: 13.5px; }
+.places-block .resource-list { padding: 0; }

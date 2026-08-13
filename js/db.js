@@ -5,10 +5,11 @@
  */
 
 const DB_NAME = 'dxf-tareas';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_PROJECTS = 'projects';
 const STORE_TASKS = 'tasks';
 const STORE_RESOURCES = 'resources';
+const STORE_PLACES = 'places';
 const LS_KEY = 'dxf-tareas:fallback';
 
 let dbPromise = null;
@@ -30,6 +31,11 @@ function openDb() {
             // v2: recursos (personal y maquinaria) por proyecto.
             if (!db.objectStoreNames.contains(STORE_RESOURCES)) {
                 const store = db.createObjectStore(STORE_RESOURCES, { keyPath: 'id' });
+                store.createIndex('projectId', 'projectId', { unique: false });
+            }
+            // v3: puntos del plano donde se ubican esos recursos.
+            if (!db.objectStoreNames.contains(STORE_PLACES)) {
+                const store = db.createObjectStore(STORE_PLACES, { keyPath: 'id' });
                 store.createIndex('projectId', 'projectId', { unique: false });
             }
         };
@@ -72,6 +78,7 @@ function readFallback() {
     if (!Array.isArray(data.projects)) data.projects = [];
     if (!Array.isArray(data.tasks)) data.tasks = [];
     if (!Array.isArray(data.resources)) data.resources = [];
+    if (!Array.isArray(data.places)) data.places = [];
     return data;
 }
 
@@ -143,6 +150,8 @@ export async function deleteProject(id) {
     await Promise.all(tasks.map((task) => deleteTask(task.id)));
     const resources = await listResources(id);
     await Promise.all(resources.map((resource) => deleteResource(resource.id)));
+    const places = await listPlaces(id);
+    await Promise.all(places.map((place) => deletePlace(place.id)));
     return withDb(
         (db) => tx(db, [STORE_PROJECTS], 'readwrite', (t) => t.objectStore(STORE_PROJECTS).delete(id)),
         () => {
@@ -230,6 +239,47 @@ export async function deleteResource(id) {
         () => {
             const data = readFallback();
             data.resources = data.resources.filter((resource) => resource.id !== id);
+            writeFallback(data);
+        }
+    );
+}
+
+/* ------------------------- ubicaciones en el plano ----------------------- */
+
+export async function savePlace(place) {
+    place.updatedAt = Date.now();
+    return withDb(
+        (db) => tx(db, [STORE_PLACES], 'readwrite', (t) => t.objectStore(STORE_PLACES).put(place)),
+        () => {
+            const data = readFallback();
+            const i = data.places.findIndex((p) => p.id === place.id);
+            if (i >= 0) data.places[i] = place; else data.places.push(place);
+            writeFallback(data);
+        }
+    );
+}
+
+export async function savePlaces(places) {
+    for (const place of places) await savePlace(place);
+}
+
+export async function listPlaces(projectId) {
+    const places = await withDb(
+        async (db) => {
+            const t = db.transaction([STORE_PLACES], 'readonly');
+            return req(t.objectStore(STORE_PLACES).index('projectId').getAll(projectId));
+        },
+        () => readFallback().places.filter((place) => place.projectId === projectId)
+    );
+    return (places || []).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+}
+
+export async function deletePlace(id) {
+    return withDb(
+        (db) => tx(db, [STORE_PLACES], 'readwrite', (t) => t.objectStore(STORE_PLACES).delete(id)),
+        () => {
+            const data = readFallback();
+            data.places = data.places.filter((place) => place.id !== id);
             writeFallback(data);
         }
     );
