@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Tareas DXF">
+  <rect width="512" height="512" rx="96" fill="#131a23"/>
+  <rect x="96" y="96" width="320" height="320" fill="none" stroke="#26313f" stroke-width="8"/>
+  <polyline points="110,300 210,150 330,230 410,120" fill="none" stroke="#2f81f7" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#e6edf5">
+    <circle cx="110" cy="300" r="15"/>
+    <circle cx="210" cy="150" r="15"/>
+    <circle cx="330" cy="230" r="15"/>
+    <circle cx="410" cy="120" r="15"/>
+  </g>
+  <path d="M330 314a46 46 0 0 0-46 46c0 30 33 60 46 87 13-27 46-57 46-87a46 46 0 0 0-46-46z" fill="#f59e0b"/>
+  <polyline points="305,352 324,372 360,332" fill="none" stroke="#0b0f14" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
