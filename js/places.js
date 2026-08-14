@@ -16,6 +16,8 @@ export function createPlace(projectId, patch = {}) {
         x: 0,
         y: 0,
         resources: [],  // ids de personal y maquinaria en ese punto
+        from: '',       // desde cuando estan ahi (YYYY-MM-DD)
+        to: '',         // hasta cuando; vacio = siguen ahi
         note: '',
         createdAt: now,
         updatedAt: now,
@@ -64,6 +66,15 @@ export function placeTitle(place, resources) {
     return names.length ? names.join(', ') : 'Punto sin asignar';
 }
 
+/** Ubicaciones vigentes en una fecha dada. Sin fechas, el punto vale siempre. */
+export function placesAt(places, date) {
+    return places.filter((place) => {
+        if (place.from && date < place.from) return false;
+        if (place.to && date > place.to) return false;
+        return true;
+    });
+}
+
 /** Ubicaciones donde aparece un recurso. */
 export function placesOf(resourceId, places) {
     return places.filter((place) => (place.resources || []).includes(resourceId));
@@ -76,13 +87,15 @@ function csvCell(value) {
 
 export function placesToCsv(places, resources) {
     const names = new Map(resources.map((r) => [r.id, r.name]));
-    const header = ['id', 'punto', 'x', 'y', 'personal_y_maquinaria', 'nota', 'creado'];
+    const header = ['id', 'punto', 'x', 'y', 'personal_y_maquinaria', 'desde', 'hasta', 'nota', 'creado'];
     const rows = places.map((place) => [
         place.id,
         placeTitle(place, resources),
         place.x,
         place.y,
         (place.resources || []).map((id) => names.get(id) || id).join(' | '),
+        place.from,
+        place.to,
         place.note,
         new Date(place.createdAt).toISOString()
     ].map(csvCell).join(';'));

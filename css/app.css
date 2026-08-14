@@ -602,3 +602,59 @@ textarea { resize: vertical; }
     min-height: 32px;
 }
 .mark-done.on { border-color: rgba(34, 197, 94, 0.5); color: #86efac; background: rgba(34, 197, 94, 0.1); }
+
+/* ----------------------------- Linea de tiempo ---------------------------- */
+
+.timeline {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + var(--safe-bottom));
+    padding: 10px 12px 8px;
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
+    background: rgba(21, 29, 39, 0.97);
+    box-shadow: var(--shadow);
+    display: grid;
+    gap: 6px;
+    z-index: 5;
+}
+.timeline-head { display: flex; align-items: center; gap: 8px; }
+.timeline-head strong { flex: 1; text-align: center; font-size: 14.5px; white-space: nowrap; }
+.tl-btn {
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--text);
+    border-radius: 8px;
+    width: 34px;
+    height: 34px;
+    font-size: 13px;
+    display: grid;
+    place-items: center;
+    flex: none;
+}
+.tl-btn:hover { border-color: #3a4657; }
+#timeline-range { width: 100%; accent-color: var(--accent); margin: 0; }
+#timeline-curve { width: 100%; height: 64px; display: block; }
+.timeline-readout { font-size: 12px; color: var(--muted); line-height: 1.4; }
+
+.element-date { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #86efac; }
+.element-date input {
+    width: auto;
+    min-height: 30px;
+    padding: 3px 6px;
+    font-size: 12px;
+    background: #0b1118;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text);
+}
+
+/* Con la barra de tiempo abierta, la tarjeta de seleccion se corre arriba. */
+.app.timeline-open .selection-card { bottom: calc(190px + var(--safe-bottom)); }
+.app.timeline-open .toast { bottom: calc(250px + var(--safe-bottom)); }
+
+@media (max-width: 900px) {
+    .timeline { left: 8px; right: 8px; }
+    .timeline-head strong { font-size: 13.5px; }
+}

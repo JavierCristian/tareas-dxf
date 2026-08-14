@@ -37,7 +37,8 @@ export function createTask(projectId, patch = {}) {
         status: 'pendiente',
         priority: 'media',
         assignee: '',
-        due: '',
+        start: '',      // inicio planificado (YYYY-MM-DD)
+        due: '',        // termino planificado
         elements: [],   // [{id, kind, layer, x, y}]
         resources: [],  // ids de personal y maquinaria asignados
         progress: 0,    // avance declarado 0-100

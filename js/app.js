@@ -24,8 +24,12 @@ import {
     workload, resourcesToCsv
 } from './resources.js';
 import {
-    createPlace, normalizePlace, placeIcon, placeColor, placeTitle, placesOf, placesToCsv
+    createPlace, normalizePlace, placeIcon, placeColor, placeTitle, placesOf, placesAt, placesToCsv
 } from './places.js';
+import {
+    projectRange, projectStateAt, taskStateAt, progressCurve, addDays, daysBetween,
+    formatDate, todayISO as todayDate
+} from './timeline.js';
 import {
     applyEdits, makeEdit, removeEdit, editOfShape, canSplit, splitOpen, splitClosed,
     equalCuts, projectOnPath, pathLength, chain, joinTolerance, MIN_PART_RATIO
@@ -52,6 +56,7 @@ const state = {
     draft: null,            // tarea en edicion
     resourceDraft: null,    // recurso en edicion
     placeDraft: null,       // ubicacion en edicion
+    timeline: null,         // {from, to, days, date, playing, timer} cuando el cursor esta activo
     splitTarget: null,      // figura que se esta dividiendo
     pick: null,             // {onPick, message}
     saveViewTimer: null
@@ -82,13 +87,14 @@ function init() {
     wireTaskForm();
     wireResources();
     wirePlaces();
+    wireTimeline();
     wireSplitModal();
 
     refreshRecent();
     registerServiceWorker();
 
     // Acceso desde la consola del navegador para diagnosticar en obra.
-    window.tareasDxf = { state, get viewer() { return viewer; } };
+    window.tareasDxf = { state, get viewer() { return viewer; }, setTimelineDate };
 }
 
 function fillSelect(select, options, allValue, allLabel) {
@@ -272,6 +278,7 @@ function loadIntoApp(project, scene, tasks, resources = [], places = []) {
     state.resources = resources;
     state.places = places;
     state.selection = [];
+    stopTimeline();
     state.filters = { text: '', status: 'todas', layer: 'todas', resource: 'todas' };
     $('#filter-text').value = '';
     $('#filter-status').value = 'todas';
@@ -1114,7 +1121,11 @@ function refreshMarkers() {
 
 function renderMarkers(tasks) {
     const markers = [];
-    for (const place of state.places) {
+    const date = timelineActive() ? state.timeline.date : null;
+
+    // Con el cursor activo solo se ven los puntos vigentes a esa fecha.
+    const places = date ? placesAt(state.places, date) : state.places;
+    for (const place of places) {
         const count = (place.resources || []).length;
         markers.push({
             id: place.id,
@@ -1127,14 +1138,26 @@ function renderMarkers(tasks) {
             active: state.placeDraft ? state.placeDraft.id === place.id : false
         });
     }
+
+    const timeState = date ? projectStateAt(state.tasks, state.shapesById, date, state.unitScale) : null;
     tasks.forEach((task, index) => {
         const anchor = taskAnchor(task);
         if (!anchor) return;
+        let color = statusOf(task.status).color;
+        if (timeState) {
+            // El color refleja como estaba la tarea ese dia, no como esta hoy.
+            const at = timeState.perTask.get(task.id);
+            const real = at && at.real !== null ? at.real : 0;
+            if (real >= 1) color = statusOf('completada').color;
+            else if (real > 0) color = statusOf('en_curso').color;
+            else if (at && at.late) color = statusOf('bloqueada').color;
+            else color = statusOf('pendiente').color;
+        }
         markers.push({
             id: task.id,
             x: anchor.x,
             y: anchor.y,
-            color: statusOf(task.status).color,
+            color,
             label: String(index + 1),
             active: state.draft ? state.draft.id === task.id : false
         });
@@ -1144,8 +1167,12 @@ function renderMarkers(tasks) {
 
 const DONE_COLOR = '#22c55e';
 
-/** Resalta los tramos de una tarea: verde lo hecho, color de estado lo pendiente. */
+/**
+ * Resalta los tramos de una tarea: verde los ejecutados, el color del estado
+ * los pendientes. Con la linea de tiempo abierta manda la fecha del cursor.
+ */
 function applyTaskHighlight(task) {
+    if (timelineActive()) return;
     if (!task || !task.elements.length) return clearTaskHighlight();
     const pending = statusOf(task.status).color;
     const map = new Map();
@@ -1157,6 +1184,7 @@ function applyTaskHighlight(task) {
 }
 
 function clearTaskHighlight() {
+    if (timelineActive()) return;
     viewer.setTaskHighlight(null);
 }
 
@@ -1255,7 +1283,7 @@ async function toggleElementDone(task, elementId) {
     const ref = task.elements.find((e) => e.id === elementId);
     if (!ref) return;
     ref.done = !ref.done;
-    ref.doneAt = ref.done ? (ref.doneAt || todayISO()) : null;
+    ref.doneAt = ref.done ? (ref.doneAt || todayDate()) : null;
     task.progress = Math.round(progressFromElements(task, state.shapesById));
     if (task.progress === 100 && task.status !== 'completada') task.status = 'completada';
     else if (task.progress < 100 && task.status === 'completada') task.status = 'en_curso';
@@ -1326,6 +1354,219 @@ function geometryActions() {
         : 'Las divisiones y uniones no modifican el archivo DXF: se guardan en el proyecto y se pueden deshacer.';
     box.append(hint);
     return box;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Linea de tiempo: la obra vista en una fecha cualquiera              */
+/* ------------------------------------------------------------------ */
+
+const PLAY_MS = 260;
+
+function timelineActive() {
+    return !!state.timeline;
+}
+
+function openTimeline() {
+    const range = projectRange(state.tasks, state.places);
+    if (!range) {
+        return toast('Todavia no hay fechas: marca tramos o pon inicio y termino a una tarea.');
+    }
+    const today = todayDate();
+    const date = today < range.from ? range.from : (today > range.to ? range.to : today);
+    state.timeline = { ...range, date, playing: false, timer: null };
+
+    const slider = $('#timeline-range');
+    slider.min = '0';
+    slider.max = String(range.days);
+    slider.value = String(Math.max(0, daysBetween(range.from, date)));
+
+    // La seleccion se dibuja encima del avance y lo taparia: el cursor es
+    // un modo de lectura, no de edicion.
+    setSelection([]);
+    $('#timeline').classList.remove('hidden');
+    $('#app').classList.add('timeline-open');
+    $('#btn-timeline').classList.add('active');
+    renderTimeline();
+}
+
+function stopTimeline() {
+    if (!state.timeline) return;
+    pauseTimeline();
+    state.timeline = null;
+    $('#timeline').classList.add('hidden');
+    $('#app').classList.remove('timeline-open');
+    $('#btn-timeline').classList.remove('active');
+    clearTaskHighlight();
+    renderTasks();
+}
+
+function setTimelineDate(date) {
+    if (!state.timeline) return;
+    const clamped = date < state.timeline.from ? state.timeline.from
+        : (date > state.timeline.to ? state.timeline.to : date);
+    state.timeline.date = clamped;
+    $('#timeline-range').value = String(daysBetween(state.timeline.from, clamped));
+    renderTimeline();
+}
+
+function stepTimeline(days) {
+    if (!state.timeline) return;
+    setTimelineDate(addDays(state.timeline.date, days));
+}
+
+function playTimeline() {
+    if (!state.timeline || state.timeline.playing) return;
+    // Al reproducir desde el final se vuelve al principio.
+    if (state.timeline.date >= state.timeline.to) setTimelineDate(state.timeline.from);
+    state.timeline.playing = true;
+    $('#btn-timeline-play').textContent = '⏸';
+    state.timeline.timer = setInterval(() => {
+        if (!state.timeline) return;
+        if (state.timeline.date >= state.timeline.to) return pauseTimeline();
+        stepTimeline(1);
+    }, PLAY_MS);
+}
+
+function pauseTimeline() {
+    if (!state.timeline) return;
+    clearInterval(state.timeline.timer);
+    state.timeline.timer = null;
+    state.timeline.playing = false;
+    $('#btn-timeline-play').textContent = '▶';
+}
+
+/** Dibuja el plano, los marcadores y la curva para la fecha del cursor. */
+function renderTimeline() {
+    const timeline = state.timeline;
+    if (!timeline) return;
+    const date = timeline.date;
+    const state_ = projectStateAt(state.tasks, state.shapesById, date, state.unitScale);
+
+    $('#timeline-date').textContent = formatDate(date) + (date === todayDate() ? ' · hoy' : '');
+
+    // Todos los tramos de todas las tareas, segun estaban a esa fecha.
+    const highlight = new Map();
+    for (const task of state.tasks) {
+        const taskState = state_.perTask.get(task.id);
+        const pending = statusOf(task.status).color;
+        for (const ref of task.elements) {
+            if (!state.shapesById.has(ref.id)) continue;
+            highlight.set(ref.id, taskState.doneIds.has(ref.id) ? DONE_COLOR : pending);
+        }
+    }
+    viewer.setTaskHighlight(highlight);
+    renderMarkers(filterTasks(state.tasks, { ...state.filters, resourceNames: new Map() }));
+
+    const units = state.project.units === 'sin unidad' ? '' : ` ${state.project.units}`;
+    const bits = [];
+    if (state_.realPct !== null) {
+        bits.push(`Ejecutado ${Math.round(state_.realPct)}% (${formatNumber(state_.done.length)}${units})`);
+    }
+    if (state_.plannedPct !== null) {
+        const diff = state_.realPct - state_.plannedPct;
+        const sign = diff >= 0 ? '+' : '−';
+        bits.push(`plan ${Math.round(state_.plannedPct)}% (${sign}${Math.abs(Math.round(diff))} pts)`);
+    }
+    if (state_.done.volume) bits.push(`${formatNumber(state_.done.volume)} m³`);
+    if (state_.done.count) bits.push(`${state_.done.count} de ${state_.total.count} tramos`);
+    if (state_.lateTasks) bits.push(`${state_.lateTasks} tarea(s) atrasada(s)`);
+    const activePlaces = placesAt(state.places, date).length;
+    if (state.places.length) bits.push(`${activePlaces} punto(s) activo(s)`);
+    $('#timeline-readout').textContent = bits.join(' · ');
+
+    drawCurve();
+}
+
+/** Curva de avance acumulado: real contra planificado. */
+function drawCurve() {
+    const timeline = state.timeline;
+    const canvas = $('#timeline-curve');
+    if (!timeline || !canvas) return;
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    const width = canvas.clientWidth || 320;
+    const height = 64;
+    if (canvas.width !== Math.round(width * dpr)) {
+        canvas.width = Math.round(width * dpr);
+        canvas.height = Math.round(height * dpr);
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    const points = progressCurve(state.tasks, state.shapesById, timeline, state.unitScale);
+    if (points.length < 2) return;
+
+    const pad = 4;
+    const x = (iso) => pad + (daysBetween(timeline.from, iso) / Math.max(1, timeline.days)) * (width - pad * 2);
+    const y = (pct) => height - pad - (Math.max(0, Math.min(100, pct)) / 100) * (height - pad * 2);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+    ctx.lineWidth = 1;
+    for (const pct of [0, 50, 100]) {
+        ctx.beginPath();
+        ctx.moveTo(pad, y(pct));
+        ctx.lineTo(width - pad, y(pct));
+        ctx.stroke();
+    }
+
+    // Planificado: linea punteada.
+    if (points.some((p) => p.planned !== null)) {
+        ctx.save();
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = '#93a2b5';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        let started = false;
+        for (const point of points) {
+            if (point.planned === null) continue;
+            const px = x(point.date);
+            const py = y(point.planned);
+            if (started) ctx.lineTo(px, py); else { ctx.moveTo(px, py); started = true; }
+        }
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // Real: linea llena.
+    ctx.strokeStyle = '#22c55e';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    points.forEach((point, i) => {
+        const px = x(point.date);
+        const py = y(point.real);
+        if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+    });
+    ctx.stroke();
+
+    // Marca de la fecha del cursor.
+    const cx = x(timeline.date);
+    ctx.strokeStyle = '#2f81f7';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, pad);
+    ctx.lineTo(cx, height - pad);
+    ctx.stroke();
+}
+
+function wireTimeline() {
+    $('#btn-timeline').addEventListener('click', () => {
+        if (timelineActive()) stopTimeline(); else openTimeline();
+    });
+    $('#btn-timeline-close').addEventListener('click', stopTimeline);
+    $('#btn-timeline-prev').addEventListener('click', () => { pauseTimeline(); stepTimeline(-1); });
+    $('#btn-timeline-next').addEventListener('click', () => { pauseTimeline(); stepTimeline(1); });
+    $('#btn-timeline-today').addEventListener('click', () => { pauseTimeline(); setTimelineDate(todayDate()); });
+    $('#btn-timeline-play').addEventListener('click', () => {
+        if (state.timeline && state.timeline.playing) pauseTimeline(); else playTimeline();
+    });
+    $('#timeline-range').addEventListener('input', (e) => {
+        if (!state.timeline) return;
+        pauseTimeline();
+        setTimelineDate(addDays(state.timeline.from, Number(e.target.value)));
+    });
+    window.addEventListener('resize', () => { if (timelineActive()) drawCurve(); });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1663,6 +1904,8 @@ function openPlaceModal(place, isNew = false) {
     state.placeDraft = { ...place, resources: [...(place.resources || [])], isNew };
     $('#place-modal-title').textContent = isNew ? 'Nuevo punto' : 'Punto en el plano';
     $('#place-label').value = place.label || '';
+    $('#place-from').value = place.from || '';
+    $('#place-to').value = place.to || '';
     $('#place-note').value = place.note || '';
     $('#btn-delete-place').hidden = isNew;
     renderPlacePosition();
@@ -1721,6 +1964,8 @@ function wirePlaces() {
         const draft = state.placeDraft;
         if (!draft) return;
         draft.label = $('#place-label').value.trim();
+        draft.from = $('#place-from').value;
+        draft.to = $('#place-to').value;
         draft.note = $('#place-note').value.trim();
 
         const isNew = draft.isNew;
@@ -1779,6 +2024,7 @@ function openTaskModal(task, isNew = false) {
     $('#task-status').value = task.status;
     $('#task-priority').value = task.priority;
     $('#task-assignee').value = task.assignee || '';
+    $('#task-start').value = task.start || '';
     $('#task-due').value = task.due || '';
     $('#task-description').value = task.description || '';
     $('#btn-delete-task').hidden = isNew;
@@ -1909,13 +2155,6 @@ function renderPickerInto(box, selectedIds, onToggle) {
     }
 }
 
-/** Fecha local en formato YYYY-MM-DD, que es como se guarda el avance. */
-function todayISO() {
-    const now = new Date();
-    const offset = now.getTimezoneOffset() * 60000;
-    return new Date(now.getTime() - offset).toISOString().slice(0, 10);
-}
-
 function measureOf(ref) {
     const shape = state.shapesById.get(ref.id);
     return shape ? measure(shape) : null;
@@ -1955,7 +2194,7 @@ function renderLinkedElements() {
         input.checked = !!element.done;
         input.addEventListener('change', () => {
             element.done = input.checked;
-            element.doneAt = input.checked ? (element.doneAt || todayISO()) : null;
+            element.doneAt = input.checked ? (element.doneAt || todayDate()) : null;
             renderLinkedElements();
             renderTaskQuantity();
             applyTaskHighlight(state.draft);
@@ -2001,10 +2240,20 @@ function renderLinkedElements() {
             main.append(section);
         }
 
-        if (element.done && element.doneAt) {
-            const when = document.createElement('span');
+        // La fecha se puede corregir: el lunes se registra lo del viernes.
+        if (element.done) {
+            const when = document.createElement('label');
             when.className = 'element-date';
-            when.textContent = `Ejecutado el ${element.doneAt}`;
+            const text = document.createElement('span');
+            text.textContent = 'Ejecutado el';
+            const date = document.createElement('input');
+            date.type = 'date';
+            date.value = element.doneAt || todayDate();
+            date.addEventListener('change', () => {
+                element.doneAt = date.value || todayDate();
+                renderTaskQuantity();
+            });
+            when.append(text, date);
             main.append(when);
         }
 
@@ -2062,6 +2311,7 @@ function wireTaskForm() {
         draft.status = $('#task-status').value;
         draft.priority = $('#task-priority').value;
         draft.assignee = $('#task-assignee').value.trim();
+        draft.start = $('#task-start').value;
         draft.due = $('#task-due').value;
         draft.description = $('#task-description').value.trim();
         const progress = Number($('#task-progress').value);
