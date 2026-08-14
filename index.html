@@ -78,6 +78,7 @@
                 <button class="tool" id="btn-zoom-in" aria-label="Acercar">+</button>
                 <button class="tool" id="btn-zoom-out" aria-label="Alejar">−</button>
                 <button class="tool" id="btn-multi" aria-label="Seleccion multiple" title="Seleccion multiple">⧉</button>
+                <button class="tool" id="btn-timeline" aria-label="Linea de tiempo" title="Linea de tiempo">🕑</button>
             </div>
 
             <div id="pick-banner" class="pick-banner hidden">
@@ -94,6 +95,20 @@
                     <button class="btn primary small" id="btn-task-from-selection">Nueva tarea</button>
                     <button class="btn small" id="btn-clear-selection">Quitar</button>
                 </div>
+            </div>
+
+            <div id="timeline" class="timeline hidden">
+                <div class="timeline-head">
+                    <button class="tl-btn" id="btn-timeline-play" title="Reproducir" aria-label="Reproducir">▶</button>
+                    <button class="tl-btn" id="btn-timeline-prev" title="Dia anterior" aria-label="Dia anterior">◀</button>
+                    <strong id="timeline-date">—</strong>
+                    <button class="tl-btn" id="btn-timeline-next" title="Dia siguiente" aria-label="Dia siguiente">▶</button>
+                    <button class="ghost small" id="btn-timeline-today">Hoy</button>
+                    <button class="tl-btn" id="btn-timeline-close" title="Cerrar" aria-label="Cerrar">✕</button>
+                </div>
+                <input type="range" id="timeline-range" min="0" max="0" value="0" step="1" aria-label="Fecha">
+                <canvas id="timeline-curve" height="64"></canvas>
+                <div id="timeline-readout" class="timeline-readout"></div>
             </div>
 
             <div id="toast" class="toast hidden"></div>
@@ -216,7 +231,12 @@
                 <label>Responsable
                     <input type="text" id="task-assignee" maxlength="60" placeholder="Nombre">
                 </label>
-                <label>Vencimiento
+                <label>Inicio planificado
+                    <input type="date" id="task-start">
+                </label>
+            </div>
+            <div class="form-row">
+                <label>Termino planificado
                     <input type="date" id="task-due">
                 </label>
             </div>
@@ -339,6 +359,15 @@
                 </div>
                 <div id="place-resources" class="resource-picker"></div>
             </div>
+            <div class="form-row">
+                <label>Desde
+                    <input type="date" id="place-from">
+                </label>
+                <label>Hasta
+                    <input type="date" id="place-to">
+                </label>
+            </div>
+            <p class="muted">Si dejas "Hasta" vacio, el recurso sigue en ese punto.</p>
             <label>Nota
                 <textarea id="place-note" rows="2" maxlength="1000" placeholder="Turno, frente de trabajo, observaciones"></textarea>
             </label>

@@ -56,13 +56,37 @@ datos:
   del plano aparece en la pestana *Elemento* un boton **Marcar hecho**, para
   registrar el avance parado frente a la obra.
 
+## Linea de tiempo
+
+El boton 🕑 sobre el plano abre un cursor de fechas que reconstruye la obra en
+cualquier dia, sin pedir ningun dato adicional: usa las fechas que ya se
+registran (cuando se marco cada tramo, el inicio y termino planificado de cada
+tarea, y el periodo de cada punto de recursos).
+
+Al mover el cursor:
+
+- Los tramos ejecutados **hasta esa fecha** se pintan en verde y los pendientes
+  en el color del estado de su tarea. Se muestran todas las tareas a la vez.
+- El personal y la maquinaria aparecen, se mueven o desaparecen segun el
+  *desde / hasta* de cada punto.
+- Una lectura resume el dia: ejecutado, planificado, diferencia en puntos,
+  volumen, tramos y tareas atrasadas.
+- La curva compara **avance real** (linea verde) con **avance planificado**
+  (linea punteada), con una marca en la fecha del cursor.
+
+Los botones permiten avanzar dia a dia, volver a *Hoy* o reproducir la obra
+completa. Lo planificado se reparte linealmente entre el inicio y el termino de
+cada tarea. Las tareas sin tramos marcados no tienen historial: se muestran solo
+con su plan.
+
 ## Recursos repartidos en el plano
 
 En la pestana *Recursos*, ademas del listado de personal y maquinaria, se
 pueden crear **puntos** sobre el plano:
 
 - **+ Punto en el plano** pide tocar un lugar y abre el punto para nombrarlo
-  (por ejemplo "Frente norte") y elegir quien esta ahi. Si el recurso todavia no
+  (por ejemplo "Frente norte"), fijar su periodo *desde / hasta* y elegir quien
+  esta ahi. Si el recurso todavia no
   existe, el boton *+ Recurso* lo crea y lo deja asignado a ese punto.
 - El boton **📍** de cada ficha ubica ese recurso directamente, o centra la
   vista en su punto si ya estaba ubicado.
@@ -146,6 +170,7 @@ js/tasks.js             modelo de tareas, tramos, avance, cubicacion y exportaci
 js/resources.js         modelo de personal y maquinaria
 js/places.js            puntos del plano donde se ubican los recursos
 js/edits.js             geometria de divisiones y uniones
+js/timeline.js          estado de la obra en una fecha y curva de avance
 js/app.js               union de todo y logica de pantalla
 sw.js                   service worker (uso sin conexion)
 manifest.webmanifest    instalacion como aplicacion
