@@ -383,6 +383,41 @@
     </div>
 </div>
 
+<!-- ------------------------------ Dialogo de avance ------------------------------ -->
+<div id="advance-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="advance-modal-title">
+    <div class="modal-card">
+        <header class="modal-head">
+            <h2 id="advance-modal-title">Registrar avance</h2>
+            <button class="icon-btn" data-close="advance-modal" aria-label="Cerrar">✕</button>
+        </header>
+        <form id="advance-form" class="form">
+            <p id="advance-info" class="muted"></p>
+            <div class="advance-from">
+                <span id="advance-origin"></span>
+                <button type="button" class="ghost small" id="btn-advance-flip">Medir desde el otro extremo</button>
+            </div>
+            <label>Actividad
+                <select id="advance-task"></select>
+            </label>
+            <div class="form-row">
+                <label>Metros ejecutados
+                    <input type="number" id="advance-meters" min="0" step="0.1" inputmode="decimal" required>
+                </label>
+                <label>Fecha
+                    <input type="date" id="advance-date">
+                </label>
+            </div>
+            <p id="advance-preview" class="advance-preview"></p>
+            <footer class="modal-foot">
+                <div>
+                    <button type="button" class="btn" data-close="advance-modal">Cancelar</button>
+                    <button type="submit" class="btn primary">Registrar</button>
+                </div>
+            </footer>
+        </form>
+    </div>
+</div>
+
 <!-- ------------------------------ Dialogo de division ------------------------------ -->
 <div id="split-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="split-modal-title">
     <div class="modal-card">

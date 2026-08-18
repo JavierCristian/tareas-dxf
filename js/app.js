@@ -58,6 +58,8 @@ const state = {
     placeDraft: null,       // ubicacion en edicion
     timeline: null,         // {from, to, days, date, playing, timer} cuando el cursor esta activo
     splitTarget: null,      // figura que se esta dividiendo
+    advance: null,          // {shape, fromStart, tasks} al registrar avance
+    lastTap: null,          // ultimo punto tocado en el plano
     pick: null,             // {onPick, message}
     saveViewTimer: null
 };
@@ -88,6 +90,7 @@ function init() {
     wireResources();
     wirePlaces();
     wireTimeline();
+    wireAdvance();
     wireSplitModal();
 
     refreshRecent();
@@ -531,6 +534,7 @@ function togglePanel(force) {
 
 function handleTap(local, event) {
     const world = viewer.screenToWorld(local.x, local.y);
+    state.lastTap = world;
 
     if (state.pick) {
         const shape = viewer.pickAt(local.x, local.y);
@@ -627,6 +631,16 @@ function describeMeasure(shape) {
  * a los elementos consumidos.
  */
 async function commitEdit(edit, message) {
+    // Se guarda como estaban los tramos afectados para poder deshacer sin
+    // inventar: al revertir se reponen tal cual estaban, con su fecha y estado.
+    const gone = new Set(edit.from);
+    edit.taskRefs = state.tasks
+        .filter((task) => task.elements.some((ref) => gone.has(ref.id)))
+        .map((task) => ({
+            taskId: task.id,
+            refs: task.elements.filter((ref) => gone.has(ref.id)).map((ref) => ({ ...ref }))
+        }));
+
     state.project.edits = [...(state.project.edits || []), edit];
     applyLayers();
     const touched = remapTasks(edit);
@@ -656,10 +670,12 @@ function remapTasks(edit) {
                 if (!seen.has(ref.id)) { next.push(ref); seen.add(ref.id); }
                 continue;
             }
-            const best = nearestPart(parts, ref);
-            if (best && !seen.has(best.id)) {
-                next.push(elementRef(best, keepNear(best, ref)));
-                seen.add(best.id);
+            // La actividad cubria todo el elemento, asi que se queda con todos
+            // los trozos que lo reemplazan: si no, perderia longitud al dividir.
+            for (const part of parts) {
+                if (seen.has(part.id)) continue;
+                next.push(inheritRef(part, ref));
+                seen.add(part.id);
             }
         }
         task.elements = next;
@@ -667,6 +683,20 @@ function remapTasks(edit) {
         touched.push(task);
     }
     return touched;
+}
+
+/**
+ * Nuevo tramo con los datos del que reemplaza: si estaba ejecutado y con
+ * seccion definida, sus partes tambien lo estan.
+ */
+function inheritRef(shape, ref) {
+    return {
+        ...elementRef(shape, keepNear(shape, ref)),
+        done: !!ref.done,
+        doneAt: ref.done ? ref.doneAt : null,
+        width: ref.width ?? null,
+        depth: ref.depth ?? null
+    };
 }
 
 /**
@@ -679,18 +709,6 @@ function keepNear(shape, ref) {
     return { x: projection.x, y: projection.y };
 }
 
-function nearestPart(parts, ref) {
-    let best = null;
-    let bestDistance = Infinity;
-    for (const part of parts) {
-        const distance = projectOnPath(part.pts, ref.x, ref.y).distance;
-        if (distance < bestDistance) {
-            bestDistance = distance;
-            best = part;
-        }
-    }
-    return best;
-}
 
 function openSplitModal(shape) {
     state.splitTarget = shape;
@@ -793,9 +811,27 @@ async function undoEdit(editId) {
     state.project.edits = edits;
     applyLayers();
 
-    // Las tareas que apuntaban a partes eliminadas vuelven al elemento original.
-    const candidates = [...restored].map((id) => state.shapesById.get(id)).filter(Boolean);
+    // Las tareas que apuntaban a partes eliminadas vuelven a su estado previo.
     const touched = [];
+    const undone = before.filter((edit) => removed.includes(edit.id)).reverse();
+    for (const edit of undone) {
+        const partIds = new Set(edit.parts.map((part) => part.id));
+        for (const snapshot of edit.taskRefs || []) {
+            const task = state.tasks.find((t) => t.id === snapshot.taskId);
+            if (!task) continue;
+            const kept = task.elements.filter((ref) => !partIds.has(ref.id));
+            for (const ref of snapshot.refs) {
+                if (!state.shapesById.has(ref.id)) continue;
+                if (!kept.some((r) => r.id === ref.id)) kept.push({ ...ref });
+            }
+            task.elements = kept;
+            task.updatedAt = Date.now();
+            if (!touched.includes(task)) touched.push(task);
+        }
+    }
+
+    // Ediciones antiguas, sin ese registro: se reparte entre lo restaurado.
+    const candidates = [...restored].map((id) => state.shapesById.get(id)).filter(Boolean);
     for (const task of state.tasks) {
         const next = [];
         const seen = new Set();
@@ -806,17 +842,22 @@ async function undoEdit(editId) {
                 continue;
             }
             changed = true;
-            const shape = nearestPart(candidates, ref);
-            if (shape && !seen.has(shape.id)) {
-                next.push(elementRef(shape, keepNear(shape, ref)));
+            for (const shape of candidates) {
+                if (seen.has(shape.id)) continue;
+                next.push(inheritRef(shape, ref));
                 seen.add(shape.id);
             }
         }
         if (changed) {
             task.elements = next;
             task.updatedAt = Date.now();
-            touched.push(task);
+            if (!touched.includes(task)) touched.push(task);
         }
+    }
+
+    // El avance se recalcula: puede haber cambiado la longitud ejecutada.
+    for (const task of touched) {
+        if (tracksElements(task)) task.progress = Math.round(progressFromElements(task, state.shapesById));
     }
 
     await saveProject(state.project);
@@ -1166,6 +1207,7 @@ function renderMarkers(tasks) {
 }
 
 const DONE_COLOR = '#22c55e';
+const PENDING_COLOR = '#ef4444';
 
 /**
  * Resalta los tramos de una tarea: verde los ejecutados, el color del estado
@@ -1174,13 +1216,13 @@ const DONE_COLOR = '#22c55e';
 function applyTaskHighlight(task) {
     if (timelineActive()) return;
     if (!task || !task.elements.length) return clearTaskHighlight();
-    const pending = statusOf(task.status).color;
     const map = new Map();
     for (const ref of task.elements) {
         if (!state.shapesById.has(ref.id)) continue;
-        map.set(ref.id, ref.done ? DONE_COLOR : pending);
+        map.set(ref.id, ref.done ? DONE_COLOR : PENDING_COLOR);
     }
-    viewer.setTaskHighlight(map);
+    // El resto del plano se apaga para que se lea solo esta actividad.
+    viewer.setTaskHighlight(map, true);
 }
 
 function clearTaskHighlight() {
@@ -1311,6 +1353,14 @@ function geometryActions() {
 
     if (shapes.length === 1) {
         const shape = shapes[0];
+        // Registrar avance solo tiene sentido en tramos lineales.
+        if (canSplit(shape) && !shape.closed) {
+            const advance = document.createElement('button');
+            advance.className = 'btn small primary';
+            advance.textContent = 'Registrar avance…';
+            advance.addEventListener('click', () => openAdvanceModal(shape));
+            buttons.append(advance);
+        }
         if (canSplit(shape)) {
             const split = document.createElement('button');
             split.className = 'btn small';
@@ -1356,6 +1406,157 @@ function geometryActions() {
     return box;
 }
 
+
+
+/* ------------------------------------------------------------------ */
+/* Avance por metraje desde el plano                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Registra avance sobre un tramo: divide la polilinea en el metraje indicado
+ * y deja ejecutada la parte del extremo desde el que se mide. Es el gesto de
+ * terreno: "por esta linea avanzamos 35 m mas".
+ */
+function openAdvanceModal(shape) {
+    const tasks = state.tasks.filter((task) => task.elements.some((ref) => ref.id === shape.id));
+    if (!tasks.length) {
+        return toast('Este tramo no pertenece a ninguna actividad. Vinculalo primero a una tarea.');
+    }
+    // El extremo desde el que se mide es el mas cercano al ultimo toque.
+    const pts = shape.pts;
+    const start = { x: pts[0], y: pts[1] };
+    const end = { x: pts[pts.length - 2], y: pts[pts.length - 1] };
+    const tap = state.lastTap || start;
+    const fromStart = Math.hypot(tap.x - start.x, tap.y - start.y) <= Math.hypot(tap.x - end.x, tap.y - end.y);
+
+    state.advance = { shape, fromStart, tasks };
+    const select = $('#advance-task');
+    select.innerHTML = '';
+    for (const task of tasks) select.append(new Option(task.title || '(sin titulo)', task.id));
+    select.disabled = tasks.length === 1;
+
+    $('#advance-info').textContent =
+        `${KIND_LABELS[shape.kind] || shape.kind} · capa ${shape.layer} · ${describeMeasure(shape)}`;
+    $('#advance-date').value = todayDate();
+    $('#advance-meters').value = '';
+    renderAdvanceOrigin();
+    $('#advance-modal').classList.remove('hidden');
+    setTimeout(() => $('#advance-meters').focus(), 50);
+}
+
+function closeAdvanceModal() {
+    $('#advance-modal').classList.add('hidden');
+    state.advance = null;
+    viewer.setHighlightPoint(null);
+}
+
+/** Muestra desde que punto se mide y como quedaria la division. */
+function renderAdvanceOrigin() {
+    const advance = state.advance;
+    if (!advance) return;
+    const { shape, fromStart } = advance;
+    const pts = shape.pts;
+    const origin = fromStart
+        ? { x: pts[0], y: pts[1] }
+        : { x: pts[pts.length - 2], y: pts[pts.length - 1] };
+    $('#advance-origin').textContent =
+        `Midiendo desde el extremo ${formatNumber(origin.x)} , ${formatNumber(origin.y)}`;
+    viewer.setHighlightPoint(origin);
+    renderAdvancePreview();
+}
+
+function renderAdvancePreview() {
+    const advance = state.advance;
+    if (!advance) return;
+    const total = pathLength(advance.shape.pts);
+    const units = state.project.units === 'sin unidad' ? '' : ` ${state.project.units}`;
+    const meters = Number($('#advance-meters').value);
+    const box = $('#advance-preview');
+
+    if (!Number.isFinite(meters) || meters <= 0) {
+        box.innerHTML = `Longitud del tramo: ${formatNumber(total)}${units}.`;
+        return;
+    }
+    // Los metros van en metros reales; el plano puede estar en otras unidades.
+    const along = meters / state.unitScale;
+    if (along >= total * (1 - MIN_PART_RATIO)) {
+        box.innerHTML = `El tramo completo (<b>${formatNumber(total)}${units}</b>) queda ejecutado. No se divide.`;
+        return;
+    }
+    const rest = total - along;
+    box.innerHTML = `Se corta a los ${formatNumber(along)}${units}: `
+        + `<b>${formatNumber(along)}${units} ejecutados</b> y `
+        + `<i>${formatNumber(rest)}${units} pendientes</i>.`;
+}
+
+async function submitAdvance() {
+    const advance = state.advance;
+    if (!advance) return;
+    const { shape, fromStart } = advance;
+    const meters = Number($('#advance-meters').value);
+    if (!Number.isFinite(meters) || meters <= 0) return toast('Escribe cuantos metros se ejecutaron.');
+
+    const date = $('#advance-date').value || todayDate();
+    const taskId = $('#advance-task').value;
+    const total = pathLength(shape.pts);
+    const along = meters / state.unitScale;
+    closeAdvanceModal();
+
+    // Avance que cubre el tramo entero: no hay nada que dividir.
+    if (along >= total * (1 - MIN_PART_RATIO)) {
+        return markRefDone(taskId, shape.id, date);
+    }
+    if (along <= total * MIN_PART_RATIO) {
+        return toast('El metraje es demasiado pequeno para este tramo.');
+    }
+
+    const cut = fromStart ? along : total - along;
+    const parts = splitOpen(shape, [cut]);
+    if (parts.length < 2) return toast('No se pudo dividir el tramo.');
+
+    const edit = makeEdit('division', [shape], parts);
+    // La parte ejecutada es la del extremo desde el que se midio.
+    const executedId = (fromStart ? edit.parts[0] : edit.parts[edit.parts.length - 1]).id;
+    await commitEdit(edit, `Avance de ${formatNumber(along)} registrado.`);
+    await markRefDone(taskId, executedId, date);
+}
+
+/** Marca un tramo como ejecutado dentro de una actividad y guarda. */
+async function markRefDone(taskId, shapeId, date) {
+    const task = state.tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    const ref = task.elements.find((e) => e.id === shapeId);
+    if (!ref) return toast('El tramo quedo fuera de la actividad.');
+
+    ref.done = true;
+    ref.doneAt = date;
+    task.progress = Math.round(progressFromElements(task, state.shapesById));
+    if (task.progress === 100 && task.status !== 'completada') task.status = 'completada';
+    else if (task.progress < 100 && task.status === 'completada') task.status = 'en_curso';
+    task.updatedAt = Date.now();
+
+    await saveTask(task);
+    setSelection([]);
+    applyTaskHighlight(task);
+    renderTasks();
+    renderElementPanel();
+    // En pantalla chica el panel tapa el plano: se cierra para ver el resultado.
+    if (window.matchMedia('(max-width: 900px)').matches) togglePanel(false);
+    toast(`${task.title || 'Actividad'}: ${task.progress}% ejecutado.`);
+}
+
+function wireAdvance() {
+    $('#btn-advance-flip').addEventListener('click', () => {
+        if (!state.advance) return;
+        state.advance.fromStart = !state.advance.fromStart;
+        renderAdvanceOrigin();
+    });
+    $('#advance-meters').addEventListener('input', renderAdvancePreview);
+    $('#advance-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        submitAdvance();
+    });
+}
 
 /* ------------------------------------------------------------------ */
 /* Linea de tiempo: la obra vista en una fecha cualquiera              */
@@ -1449,13 +1650,12 @@ function renderTimeline() {
     const highlight = new Map();
     for (const task of state.tasks) {
         const taskState = state_.perTask.get(task.id);
-        const pending = statusOf(task.status).color;
         for (const ref of task.elements) {
             if (!state.shapesById.has(ref.id)) continue;
-            highlight.set(ref.id, taskState.doneIds.has(ref.id) ? DONE_COLOR : pending);
+            highlight.set(ref.id, taskState.doneIds.has(ref.id) ? DONE_COLOR : PENDING_COLOR);
         }
     }
-    viewer.setTaskHighlight(highlight);
+    viewer.setTaskHighlight(highlight, true);
     renderMarkers(filterTasks(state.tasks, { ...state.filters, resourceNames: new Map() }));
 
     const units = state.project.units === 'sin unidad' ? '' : ` ${state.project.units}`;
@@ -2401,6 +2601,9 @@ function wireModals() {
     for (const button of $$('#place-modal [data-close]')) button.addEventListener('click', closePlaceModal);
     $('#place-modal').addEventListener('click', (e) => { if (e.target.id === 'place-modal') closePlaceModal(); });
 
+    for (const button of $$('#advance-modal [data-close]')) button.addEventListener('click', closeAdvanceModal);
+    $('#advance-modal').addEventListener('click', (e) => { if (e.target.id === 'advance-modal') closeAdvanceModal(); });
+
     for (const button of $$('#split-modal [data-close]')) button.addEventListener('click', closeSplitModal);
     $('#split-modal').addEventListener('click', (e) => { if (e.target.id === 'split-modal') closeSplitModal(); });
 
@@ -2410,6 +2613,7 @@ function wireModals() {
         // Se cierra siempre el dialogo que esta encima.
         if (!$('#resource-modal').classList.contains('hidden')) return closeResourceModal();
         if (!$('#split-modal').classList.contains('hidden')) return closeSplitModal();
+        if (!$('#advance-modal').classList.contains('hidden')) return closeAdvanceModal();
         if (!$('#place-modal').classList.contains('hidden')) return closePlaceModal();
         if (!$('#task-modal').classList.contains('hidden')) return closeTaskModal();
         const layersModal = $('#layers-modal');

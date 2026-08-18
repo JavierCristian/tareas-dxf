@@ -51,10 +51,25 @@ datos:
 - **Rendimiento**: al marcar un tramo se guarda la fecha. Con eso se calculan
   metros y m³ por dia sobre los dias en que hubo avance —los dias parados no
   castigan el numero— y se estima cuantos dias faltan.
-- **En el plano**: al seleccionar una tarea sus tramos se resaltan, en verde los
-  ejecutados y en el color del estado los pendientes. Ademas, tocando un tramo
-  del plano aparece en la pestana *Elemento* un boton **Marcar hecho**, para
-  registrar el avance parado frente a la obra.
+- **En el plano**: al seleccionar una tarea sus tramos se resaltan en **verde lo
+  ejecutado y rojo lo pendiente**, y el resto del plano se apaga para que se lea
+  solo esa actividad. Tocando un tramo, la pestana *Elemento* ofrece **Marcar
+  hecho** para registrarlo parado frente a la obra.
+
+### Avance por metraje
+
+La forma natural de registrar en terreno es por metros, no por tramos ya
+dibujados. Tocando un tramo y usando **Registrar avance**:
+
+1. Se mide desde el extremo mas cercano al punto que tocaste (un boton invierte
+   el extremo, y una marca azul en el plano muestra desde donde se cuenta).
+2. Escribes los metros ejecutados y la fecha.
+3. La polilinea **se divide sola en ese punto**: la parte medida queda ejecutada
+   y el resto pendiente, con el avance de la actividad recalculado.
+
+Si los metros cubren el tramo completo, no se divide: queda todo ejecutado. Cada
+division guarda como estaban los tramos antes, de modo que *Deshacer* devuelve
+la actividad exactamente a su estado anterior.
 
 ## Linea de tiempo
 
