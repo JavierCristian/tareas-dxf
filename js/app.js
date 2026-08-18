@@ -11,7 +11,8 @@ import {
     saveProject, getProject, listProjects, deleteProject,
     saveTask, saveTasks, listTasks, deleteTask, newId, storageMode,
     saveResource, saveResources, listResources, deleteResource,
-    savePlace, savePlaces, listPlaces, deletePlace
+    savePlace, savePlaces, listPlaces, deletePlace,
+    saveActivity, saveActivities, listActivities, deleteActivity
 } from './db.js';
 import {
     STATUSES, PRIORITIES, statusOf, priorityOf, createTask, elementRef, taskAnchor,
@@ -27,6 +28,10 @@ import {
     createPlace, normalizePlace, placeIcon, placeColor, placeTitle, placesOf, placesAt, placesToCsv
 } from './places.js';
 import {
+    ACTIVITY_COLORS, createActivity, normalizeActivity, tasksOf, looseTasks,
+    activityProgress, nextTaskName, reorder
+} from './activities.js';
+import {
     projectRange, projectStateAt, taskStateAt, progressCurve, addDays, daysBetween,
     formatDate, todayISO as todayDate
 } from './timeline.js';
@@ -37,7 +42,7 @@ import {
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '7';
+export const APP_VERSION = '8';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -54,12 +59,15 @@ const state = {
     tasks: [],
     resources: [],
     places: [],
+    activities: [],
+    activeActivity: null,   // actividad resaltada en el plano
     selection: [],          // ids de figuras
     multi: false,
     filters: { text: '', status: 'todas', layer: 'todas', resource: 'todas' },
     draft: null,            // tarea en edicion
     resourceDraft: null,    // recurso en edicion
     placeDraft: null,       // ubicacion en edicion
+    activityDraft: null,    // actividad en edicion
     timeline: null,         // {from, to, days, date, playing, timer} cuando el cursor esta activo
     splitTarget: null,      // figura que se esta dividiendo
     advance: null,          // {shape, fromStart, tasks} al registrar avance
@@ -95,6 +103,7 @@ function init() {
     wirePlaces();
     wireTimeline();
     wireAdvance();
+    wireActivities();
     wireSplitModal();
 
     refreshRecent();
@@ -273,7 +282,7 @@ async function importDxfFile(file) {
         if (scene.truncated) {
             toast('El plano es muy grande: se cargo una parte de las entidades.');
         }
-        loadIntoApp(project, scene, [], [], []);
+        loadIntoApp(project, scene, [], [], [], []);
     } catch (error) {
         hideLoading();
         console.error(error);
@@ -292,8 +301,9 @@ async function openProject(id) {
         const tasks = await listTasks(id);
         const resources = await listResources(id);
         const places = await listPlaces(id);
+        const activities = await listActivities(id);
         hideLoading();
-        loadIntoApp(project, scene, tasks, resources, places);
+        loadIntoApp(project, scene, tasks, resources, places, activities);
     } catch (error) {
         hideLoading();
         console.error(error);
@@ -301,7 +311,7 @@ async function openProject(id) {
     }
 }
 
-function loadIntoApp(project, scene, tasks, resources = [], places = []) {
+function loadIntoApp(project, scene, tasks, resources = [], places = [], activities = []) {
     state.project = project;
     if (!Array.isArray(project.edits)) project.edits = [];
     state.allShapes = scene.shapes;
@@ -309,6 +319,8 @@ function loadIntoApp(project, scene, tasks, resources = [], places = []) {
     state.tasks = tasks;
     state.resources = resources;
     state.places = places;
+    state.activities = activities;
+    state.activeActivity = null;
     state.selection = [];
     stopTimeline();
     state.filters = { text: '', status: 'todas', layer: 'todas', resource: 'todas' };
@@ -981,6 +993,7 @@ function wirePanel() {
         const csv = tasksToCsv(state.tasks, {
             shapesById: state.shapesById,
             resources: state.resources,
+            activities: state.activities,
             metersPerUnit: state.unitScale
         });
         download(`${state.project.name}-tareas.csv`, csv, 'text/csv;charset=utf-8');
@@ -990,7 +1003,7 @@ function wirePanel() {
         if (!withElements.length) return toast('Ninguna tarea tiene tramos vinculados.');
         download(
             `${state.project.name}-tramos.csv`,
-            elementsToCsv(withElements, state.shapesById, state.unitScale),
+            elementsToCsv(withElements, state.shapesById, state.unitScale, state.activities),
             'text/csv;charset=utf-8'
         );
     });
@@ -998,7 +1011,8 @@ function wirePanel() {
         const json = projectToJson(state.project, state.tasks, {
             includeDxf: true,
             resources: state.resources,
-            places: state.places
+            places: state.places,
+            activities: state.activities
         });
         download(`${state.project.name}.json`, json, 'application/json');
         toast('Copia generada (incluye plano, recursos, ubicaciones y divisiones).');
@@ -1096,6 +1110,7 @@ function renderTasks() {
     const list = $('#task-list');
     const resourceNames = new Map(state.resources.map((r) => [r.id, `${r.name} ${r.role || ''}`]));
     const visible = filterTasks(state.tasks, { ...state.filters, resourceNames });
+    const visibleIds = new Set(visible.map((task) => task.id));
     list.innerHTML = '';
     renderProgress();
 
@@ -1108,61 +1123,180 @@ function renderTasks() {
         summary.append(chip(`${stats.counts[status.id]} ${status.label.toLowerCase()}`, status.color));
     }
     if (stats.overdue) summary.append(chip(`${stats.overdue} vencidas`, '#ef4444'));
+    $('#btn-clear-activity').hidden = !state.activeActivity;
 
-    if (!visible.length) {
-        list.innerHTML = state.tasks.length
-            ? '<li class="empty">Ninguna tarea coincide con el filtro.</li>'
-            : '<li class="empty">Sin tareas. Toca un elemento del plano y usa "+ Tarea".</li>';
+    if (!state.tasks.length && !state.activities.length) {
+        list.innerHTML = '<li class="empty">Crea una actividad (excavacion, tendido…) y ve agregando sus tramos.</li>';
+        renderMarkers(visible);
+        return;
     }
 
-    visible.forEach((task, index) => {
-        const status = statusOf(task.status);
-        const item = document.createElement('li');
-        item.className = 'task-item';
-        item.style.setProperty('--status', status.color);
-        item.innerHTML = `
-            <div class="task-color"></div>
-            <div class="task-main">
-                <strong></strong>
-                <div class="task-meta"></div>
-            </div>
-            <div class="task-actions">
-                <button data-focus title="Ver en el plano" aria-label="Ver en el plano">◎</button>
-                <button data-edit title="Editar" aria-label="Editar">✎</button>
-            </div>`;
-        item.querySelector('strong').textContent = `${index + 1}. ${task.title || '(sin titulo)'}`;
-        const meta = item.querySelector('.task-meta');
-        meta.append(tag(status.label), tag(`Prioridad ${priorityOf(task.priority).label.toLowerCase()}`));
-        const layers = [...new Set(task.elements.map((e) => e.layer))];
-        if (layers.length) meta.append(tag(layers.join(', ')));
-        if (task.elements.length) meta.append(tag(`${task.elements.length} elemento(s)`));
-        if (task.assignee) meta.append(tag(task.assignee));
-        for (const id of task.resources || []) {
-            const resource = resourceById(id);
-            if (resource) meta.append(tag(`${typeOf(resource.type).icon} ${resource.name}`));
-        }
-        if (task.due) meta.append(tag(`Vence ${task.due}`, isOverdue(task)));
+    // Las tareas se agrupan bajo su actividad; al final, las que no tienen.
+    const groups = state.activities.map((activity) => ({
+        activity,
+        tasks: tasksOf(activity.id, state.tasks)
+    }));
+    const loose = looseTasks(state.tasks, state.activities);
+    if (loose.length) groups.push({ activity: null, tasks: loose });
 
-        const progress = taskProgress(task);
-        if (progress > 0) {
-            const bar = document.createElement('div');
-            bar.className = 'task-progress';
-            const fill = document.createElement('span');
-            fill.style.width = `${progress}%`;
-            fill.style.background = status.color;
-            const value = document.createElement('em');
-            value.textContent = `${progress}%`;
-            bar.append(fill, value);
-            item.querySelector('.task-main').append(bar);
-        }
+    let counter = 0;
+    for (const group of groups) {
+        const shown = group.tasks.filter((task) => visibleIds.has(task.id));
+        if (!shown.length && group.tasks.length && !state.activities.length) continue;
+        list.append(renderActivityGroup(group, shown, () => ++counter));
+    }
 
-        item.querySelector('[data-focus]').addEventListener('click', (e) => { e.stopPropagation(); focusTask(task); });
-        item.querySelector('[data-edit]').addEventListener('click', (e) => { e.stopPropagation(); openTaskModal(task); });
-        item.addEventListener('click', () => focusTask(task));
-        list.append(item);
-    });
+    if (!visible.length && state.tasks.length) {
+        const empty = document.createElement('li');
+        empty.className = 'empty';
+        empty.textContent = 'Ninguna tarea coincide con el filtro.';
+        list.append(empty);
+    }
 
     renderMarkers(visible);
+}
+
+/** Cabecera de actividad con su avance, mas sus tramos. */
+function renderActivityGroup(group, shown, nextNumber) {
+    const { activity } = group;
+    const item = document.createElement('li');
+    item.className = 'activity-group';
+    if (activity && state.activeActivity === activity.id) item.classList.add('on');
+
+    const progress = activity
+        ? activityProgress(activity.id, state.tasks, state.shapesById, state.unitScale)
+        : null;
+
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'activity-head';
+    const collapsed = activity ? !!activity.collapsed : false;
+    head.innerHTML = `
+        <span class="activity-caret"></span>
+        <span>
+            <span class="activity-name"><span class="activity-dot"></span><strong></strong></span>
+            <div class="activity-sub"></div>
+        </span>
+        <span class="activity-pct"></span>`;
+    head.querySelector('.activity-caret').textContent = collapsed ? '▶' : '▼';
+    head.querySelector('.activity-dot').style.background = activity ? activity.color : '#64748b';
+    head.querySelector('strong').textContent = activity ? activity.name : 'Sin actividad';
+
+    const units = state.project.units === 'sin unidad' ? '' : ` ${state.project.units}`;
+    const sub = [];
+    sub.push(`${group.tasks.length} tramo(s)`);
+    if (progress && progress.total.length) {
+        sub.push(`${formatNumber(progress.done.length)} de ${formatNumber(progress.total.length)}${units}`);
+    }
+    if (progress && progress.total.volume) sub.push(`${formatNumber(progress.done.volume)} m³`);
+    head.querySelector('.activity-sub').textContent = sub.join(' · ');
+    head.querySelector('.activity-pct').textContent = progress ? `${Math.round(progress.pct)}%` : '';
+
+    // Tocar la cabecera resalta toda la actividad en el plano.
+    head.addEventListener('click', () => {
+        if (!activity) return toggleCollapse(null);
+        selectActivity(state.activeActivity === activity.id ? null : activity.id);
+    });
+    item.append(head);
+
+    if (progress && progress.total.length) {
+        const bar = document.createElement('div');
+        bar.className = 'activity-bar';
+        const fill = document.createElement('span');
+        fill.style.width = `${Math.max(0, Math.min(100, progress.pct))}%`;
+        bar.append(fill);
+        item.append(bar);
+    }
+
+    if (collapsed) return item;
+
+    const tasks = document.createElement('ul');
+    tasks.className = 'activity-tasks';
+    for (const task of shown) tasks.append(renderTaskItem(task, nextNumber()));
+    if (!shown.length) {
+        const empty = document.createElement('li');
+        empty.className = 'empty';
+        empty.textContent = activity ? 'Sin tramos todavia.' : '';
+        tasks.append(empty);
+    }
+    item.append(tasks);
+
+    if (activity) {
+        const actions = document.createElement('div');
+        actions.className = 'activity-actions';
+
+        const add = document.createElement('button');
+        add.className = 'ghost small';
+        add.textContent = `+ Tramo de ${activity.name}`;
+        add.addEventListener('click', (e) => { e.stopPropagation(); startTaskInActivity(activity); });
+
+        const edit = document.createElement('button');
+        edit.className = 'ghost small';
+        edit.textContent = 'Editar';
+        edit.addEventListener('click', (e) => { e.stopPropagation(); openActivityModal(activity, false); });
+
+        const up = document.createElement('button');
+        up.className = 'ghost small';
+        up.textContent = '↑';
+        up.title = 'Subir';
+        up.addEventListener('click', (e) => { e.stopPropagation(); moveActivity(activity.id, -1); });
+
+        const down = document.createElement('button');
+        down.className = 'ghost small';
+        down.textContent = '↓';
+        down.title = 'Bajar';
+        down.addEventListener('click', (e) => { e.stopPropagation(); moveActivity(activity.id, 1); });
+
+        actions.append(add, edit, up, down);
+        item.append(actions);
+    }
+    return item;
+}
+
+function renderTaskItem(task, index) {
+    const status = statusOf(task.status);
+    const item = document.createElement('li');
+    item.className = 'task-item';
+    item.style.setProperty('--status', status.color);
+    item.innerHTML = `
+        <div class="task-color"></div>
+        <div class="task-main">
+            <strong></strong>
+            <div class="task-meta"></div>
+        </div>
+        <div class="task-actions">
+            <button data-focus title="Ver en el plano" aria-label="Ver en el plano">◎</button>
+            <button data-edit title="Editar" aria-label="Editar">✎</button>
+        </div>`;
+    item.querySelector('strong').textContent = `${index}. ${task.title || '(sin titulo)'}`;
+    const meta = item.querySelector('.task-meta');
+    meta.append(tag(status.label));
+    const layers = [...new Set(task.elements.map((e) => e.layer))];
+    if (layers.length) meta.append(tag(layers.join(', ')));
+    if (task.elements.length) meta.append(tag(`${task.elements.length} tramo(s)`));
+    for (const id of task.resources || []) {
+        const resource = resourceById(id);
+        if (resource) meta.append(tag(`${typeOf(resource.type).icon} ${resource.name}`));
+    }
+    if (task.due) meta.append(tag(`Vence ${task.due}`, isOverdue(task)));
+
+    const progress = taskProgress(task);
+    if (progress > 0) {
+        const bar = document.createElement('div');
+        bar.className = 'task-progress';
+        const fill = document.createElement('span');
+        fill.style.width = `${progress}%`;
+        fill.style.background = status.color;
+        const value = document.createElement('em');
+        value.textContent = `${progress}%`;
+        bar.append(fill, value);
+        item.querySelector('.task-main').append(bar);
+    }
+
+    item.querySelector('[data-focus]').addEventListener('click', (e) => { e.stopPropagation(); focusTask(task); });
+    item.querySelector('[data-edit]').addEventListener('click', (e) => { e.stopPropagation(); openTaskModal(task); });
+    item.addEventListener('click', () => focusTask(task));
+    return item;
 }
 
 function chip(text, color) {
@@ -1243,7 +1377,7 @@ const PENDING_COLOR = '#ef4444';
  * los pendientes. Con la linea de tiempo abierta manda la fecha del cursor.
  */
 function applyTaskHighlight(task) {
-    if (timelineActive()) return;
+    if (timelineActive() || state.activeActivity) return;
     if (!task || !task.elements.length) return clearTaskHighlight();
     const map = new Map();
     for (const ref of task.elements) {
@@ -1362,6 +1496,7 @@ async function toggleElementDone(task, elementId) {
 
     await saveTask(task);
     applyTaskHighlight(task);
+    refreshActivityHighlight();
     renderTasks();
     renderElementPanel();
     toast(ref.done ? `Tramo marcado como hecho (${task.progress}% de la tarea).` : 'Tramo marcado como pendiente.');
@@ -1436,6 +1571,159 @@ function geometryActions() {
 }
 
 
+
+
+/* ------------------------------------------------------------------ */
+/* Actividades: el nivel de arriba (excavacion, tendido, tapado...)    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Al seleccionar una actividad, todo el plano muestra su avance: verde lo
+ * ejecutado y rojo lo pendiente, sumando todos los tramos de todas sus tareas.
+ */
+function selectActivity(activityId) {
+    state.activeActivity = activityId;
+    if (!activityId) {
+        clearTaskHighlight();
+        renderTasks();
+        return;
+    }
+    const map = new Map();
+    for (const task of tasksOf(activityId, state.tasks)) {
+        for (const ref of task.elements) {
+            if (!state.shapesById.has(ref.id)) continue;
+            map.set(ref.id, ref.done ? DONE_COLOR : PENDING_COLOR);
+        }
+    }
+    if (!map.size) toast('Esta actividad todavia no tiene tramos en el plano.');
+    viewer.setTaskHighlight(map, true);
+    renderTasks();
+}
+
+/** Vuelve a resaltar la actividad activa tras cualquier cambio. */
+function refreshActivityHighlight() {
+    if (state.activeActivity) selectActivity(state.activeActivity);
+}
+
+function toggleCollapse(activity) {
+    if (!activity) return;
+    activity.collapsed = !activity.collapsed;
+    saveActivity(activity);
+    renderTasks();
+}
+
+function openActivityModal(activity, isNew = false) {
+    state.activityDraft = { ...activity, isNew };
+    $('#activity-modal-title').textContent = isNew ? 'Nueva actividad' : 'Editar actividad';
+    $('#activity-name').value = activity.name || '';
+    $('#btn-delete-activity').hidden = isNew;
+    renderActivityColors();
+    $('#activity-modal').classList.remove('hidden');
+    setTimeout(() => $('#activity-name').focus(), 50);
+}
+
+function closeActivityModal() {
+    $('#activity-modal').classList.add('hidden');
+    state.activityDraft = null;
+}
+
+function renderActivityColors() {
+    const box = $('#activity-colors');
+    box.innerHTML = '';
+    for (const color of ACTIVITY_COLORS) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'color-chip' + (state.activityDraft.color === color ? ' on' : '');
+        chip.style.background = color;
+        chip.setAttribute('aria-label', `Color ${color}`);
+        chip.addEventListener('click', () => {
+            state.activityDraft.color = color;
+            renderActivityColors();
+        });
+        box.append(chip);
+    }
+}
+
+/** Nueva tarea dentro de una actividad, ya numerada y lista para vincular. */
+function startTaskInActivity(activity) {
+    // Empieza vacia a proposito: el tramo se elige tocandolo, no se hereda de
+    // lo que hubiera seleccionado (tras dividir, por ejemplo, quedan varios).
+    startNewTask({
+        activityId: activity.id,
+        title: nextTaskName(activity, state.tasks)
+    }, { ignoreSelection: true });
+}
+
+async function moveActivity(id, delta) {
+    const sorted = reorder(state.activities, id, delta);
+    if (!sorted) return;
+    state.activities = sorted;
+    await saveActivities(sorted);
+    renderTasks();
+}
+
+function wireActivities() {
+    $('#btn-new-activity').addEventListener('click', () => {
+        const used = state.activities.length;
+        openActivityModal(createActivity(state.project.id, {
+            order: used,
+            color: ACTIVITY_COLORS[used % ACTIVITY_COLORS.length]
+        }), true);
+    });
+
+    $('#btn-clear-activity').addEventListener('click', () => selectActivity(null));
+
+    $('#btn-toggle-filters').addEventListener('click', () => {
+        const filters = $('#task-filters');
+        const shown = filters.classList.toggle('hidden');
+        $('#btn-toggle-filters').classList.toggle('on', !shown);
+    });
+
+    $('#activity-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const draft = state.activityDraft;
+        if (!draft) return;
+        draft.name = $('#activity-name').value.trim();
+        if (!draft.name) return;
+
+        const isNew = draft.isNew;
+        delete draft.isNew;
+        draft.projectId = state.project.id;
+        await saveActivity(draft);
+        const index = state.activities.findIndex((a) => a.id === draft.id);
+        if (index >= 0) state.activities[index] = draft; else state.activities.push(draft);
+        state.activities.sort((a, b) => (a.order || 0) - (b.order || 0));
+
+        closeActivityModal();
+        renderTasks();
+        toast(isNew ? `Actividad "${draft.name}" creada.` : 'Actividad actualizada.');
+    });
+
+    $('#btn-delete-activity').addEventListener('click', async () => {
+        const draft = state.activityDraft;
+        if (!draft) return;
+        const own = tasksOf(draft.id, state.tasks);
+        const warning = own.length
+            ? `Esta actividad tiene ${own.length} tramo(s). Las tareas no se borran: quedaran sin actividad. ¿Eliminar?`
+            : '¿Eliminar esta actividad?';
+        if (!confirm(warning)) return;
+
+        await deleteActivity(draft.id);
+        state.activities = state.activities.filter((a) => a.id !== draft.id);
+        const touched = [];
+        for (const task of own) {
+            task.activityId = null;
+            task.updatedAt = Date.now();
+            touched.push(task);
+        }
+        if (touched.length) await saveTasks(touched);
+        if (state.activeActivity === draft.id) selectActivity(null);
+
+        closeActivityModal();
+        renderTasks();
+        toast('Actividad eliminada.');
+    });
+}
 
 /* ------------------------------------------------------------------ */
 /* Avance por metraje desde el plano                                   */
@@ -1567,6 +1855,7 @@ async function markRefDone(taskId, shapeId, date) {
     await saveTask(task);
     setSelection([]);
     applyTaskHighlight(task);
+    refreshActivityHighlight();
     renderTasks();
     renderElementPanel();
     // En pantalla chica el panel tapa el plano: se cierra para ver el resultado.
@@ -2235,8 +2524,15 @@ function wirePlaces() {
 /* Tareas: alta y edicion                                              */
 /* ------------------------------------------------------------------ */
 
-function startNewTask(extra = {}) {
-    const elements = state.selection
+function startNewTask(extra = {}, { ignoreSelection = false } = {}) {
+    // Con una actividad seleccionada, el tramo nuevo entra en ella y se numera.
+    if (!extra.activityId && state.activeActivity) {
+        const activity = state.activities.find((a) => a.id === state.activeActivity);
+        if (activity) {
+            extra = { activityId: activity.id, title: nextTaskName(activity, state.tasks), ...extra };
+        }
+    }
+    const elements = ignoreSelection ? [] : state.selection
         .map((id) => state.shapesById.get(id))
         .filter(Boolean)
         .map((shape) => elementRef(shape, anchorOf(shape)));
@@ -2253,6 +2549,7 @@ function openTaskModal(task, isNew = false) {
     $('#task-status').value = task.status;
     $('#task-priority').value = task.priority;
     $('#task-assignee').value = task.assignee || '';
+    renderTaskActivitySelect(task.activityId);
     $('#task-start').value = task.start || '';
     $('#task-due').value = task.due || '';
     $('#task-description').value = task.description || '';
@@ -2269,6 +2566,15 @@ function closeTaskModal() {
     $('#task-modal').classList.add('hidden');
     state.draft = null;
     clearTaskHighlight();
+}
+
+/** Lista de actividades a las que puede pertenecer la tarea. */
+function renderTaskActivitySelect(current) {
+    const select = $('#task-activity');
+    select.innerHTML = '';
+    select.append(new Option('Sin actividad', ''));
+    for (const activity of state.activities) select.append(new Option(activity.name, activity.id));
+    select.value = state.activities.some((a) => a.id === current) ? current : '';
 }
 
 function setProgressInputs(value) {
@@ -2540,6 +2846,7 @@ function wireTaskForm() {
         draft.status = $('#task-status').value;
         draft.priority = $('#task-priority').value;
         draft.assignee = $('#task-assignee').value.trim();
+        draft.activityId = $('#task-activity').value || null;
         draft.start = $('#task-start').value;
         draft.due = $('#task-due').value;
         draft.description = $('#task-description').value.trim();
@@ -2560,7 +2867,9 @@ function wireTaskForm() {
         if (index >= 0) state.tasks[index] = draft; else state.tasks.push(draft);
         const saved = draft;
         closeTaskModal();
+        setSelection([]);
         applyTaskHighlight(saved);
+        refreshActivityHighlight();
         renderTasks();
         renderResources();
         renderElementPanel();
@@ -2597,7 +2906,7 @@ function wireTaskForm() {
                 viewer.setSelection(draft.elements.map((e) => e.id));
             }
         });
-        viewer.setSelection([]);
+        setSelection([]);
         $('#task-modal').classList.remove('hidden');
         renderLinkedElements();
         renderTaskQuantity();
@@ -2630,6 +2939,9 @@ function wireModals() {
     for (const button of $$('#place-modal [data-close]')) button.addEventListener('click', closePlaceModal);
     $('#place-modal').addEventListener('click', (e) => { if (e.target.id === 'place-modal') closePlaceModal(); });
 
+    for (const button of $$('#activity-modal [data-close]')) button.addEventListener('click', closeActivityModal);
+    $('#activity-modal').addEventListener('click', (e) => { if (e.target.id === 'activity-modal') closeActivityModal(); });
+
     for (const button of $$('#advance-modal [data-close]')) button.addEventListener('click', closeAdvanceModal);
     $('#advance-modal').addEventListener('click', (e) => { if (e.target.id === 'advance-modal') closeAdvanceModal(); });
 
@@ -2643,6 +2955,7 @@ function wireModals() {
         if (!$('#resource-modal').classList.contains('hidden')) return closeResourceModal();
         if (!$('#split-modal').classList.contains('hidden')) return closeSplitModal();
         if (!$('#advance-modal').classList.contains('hidden')) return closeAdvanceModal();
+        if (!$('#activity-modal').classList.contains('hidden')) return closeActivityModal();
         if (!$('#place-modal').classList.contains('hidden')) return closePlaceModal();
         if (!$('#task-modal').classList.contains('hidden')) return closeTaskModal();
         const layersModal = $('#layers-modal');
@@ -2663,10 +2976,18 @@ async function importBackup(file) {
         const tasks = (data.tareas || []).map((task) => ({ ...task }));
         const resources = (data.recursos || []).map((resource) => ({ ...resource }));
         const places = (data.ubicaciones || []).map((place) => ({ ...place }));
+        const activities = (data.actividades || []).map((activity) => ({ ...activity }));
 
         // Se reasignan los identificadores para poder restaurar la misma copia
         // varias veces sin que un proyecto le pise los datos al anterior.
         const rebind = (projectId) => {
+            const actMap = new Map();
+            for (const activity of activities) {
+                const fresh = normalizeActivity(activity, projectId);
+                fresh.id = newId('act');
+                actMap.set(activity.id, fresh.id);
+                Object.assign(activity, fresh);
+            }
             const map = new Map();
             for (const resource of resources) {
                 const fresh = normalizeResource(resource, projectId);
@@ -2678,6 +2999,7 @@ async function importBackup(file) {
                 task.projectId = projectId;
                 task.id = newId('task');
                 task.resources = (task.resources || []).map((id) => map.get(id)).filter(Boolean);
+                task.activityId = actMap.get(task.activityId) || null;
             }
             for (const place of places) {
                 const fresh = normalizePlace(place, projectId);
@@ -2691,6 +3013,7 @@ async function importBackup(file) {
             const existing = source.id ? await getProject(source.id) : null;
             if (!existing) throw new Error('La copia no incluye el plano DXF. Importa primero el archivo DXF y vuelve a intentar.');
             rebind(existing.id);
+            await saveActivities(activities);
             await saveResources(resources);
             await savePlaces(places);
             await saveTasks(tasks);
@@ -2713,6 +3036,7 @@ async function importBackup(file) {
         };
         await saveProject(project);
         rebind(project.id);
+        await saveActivities(activities);
         await saveResources(resources);
         await savePlaces(places);
         await saveTasks(tasks);

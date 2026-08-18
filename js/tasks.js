@@ -39,6 +39,7 @@ export function createTask(projectId, patch = {}) {
         assignee: '',
         start: '',      // inicio planificado (YYYY-MM-DD)
         due: '',        // termino planificado
+        activityId: null,  // actividad a la que pertenece (excavacion, tendido...)
         elements: [],   // [{id, kind, layer, x, y}]
         resources: [],  // ids de personal y maquinaria asignados
         progress: 0,    // avance declarado 0-100
@@ -247,10 +248,11 @@ function round(value, decimals = 2) {
     return String(Math.round(value * factor) / factor).replace('.', ',');
 }
 
-export function tasksToCsv(tasks, { shapesById = new Map(), resources = [], metersPerUnit = 1 } = {}) {
+export function tasksToCsv(tasks, { shapesById = new Map(), resources = [], activities = [], metersPerUnit = 1 } = {}) {
     const names = new Map(resources.map((r) => [r.id, r.name]));
+    const activityNames = new Map(activities.map((a) => [a.id, a.name]));
     const header = [
-        'id', 'titulo', 'estado', 'prioridad', 'avance_%',
+        'id', 'actividad', 'titulo', 'estado', 'prioridad', 'avance_%',
         'tramos', 'tramos_hechos', 'longitud', 'longitud_hecha', 'area', 'volumen_m3', 'volumen_hecho_m3',
         'rendimiento_por_dia', 'dias_con_avance', 'dias_restantes',
         'personal_y_maquinaria', 'responsable', 'vencimiento', 'capas', 'elementos',
@@ -262,6 +264,7 @@ export function tasksToCsv(tasks, { shapesById = new Map(), resources = [], mete
         const rate = performance(task, shapesById, metersPerUnit);
         return [
             task.id,
+            activityNames.get(task.activityId) || '',
             task.title,
             statusOf(task.status).label,
             priorityOf(task.priority).label,
@@ -292,8 +295,9 @@ export function tasksToCsv(tasks, { shapesById = new Map(), resources = [], mete
 }
 
 /** Detalle tramo a tramo, para revisar o cubicar fuera de la aplicacion. */
-export function elementsToCsv(tasks, shapesById, metersPerUnit = 1) {
-    const header = ['tarea', 'tramo_id', 'tipo', 'capa', 'longitud', 'ancho_m', 'profundidad_m', 'volumen_m3', 'hecho', 'fecha'];
+export function elementsToCsv(tasks, shapesById, metersPerUnit = 1, activities = []) {
+    const activityNames = new Map(activities.map((a) => [a.id, a.name]));
+    const header = ['actividad', 'tarea', 'tramo_id', 'tipo', 'capa', 'longitud', 'ancho_m', 'profundidad_m', 'volumen_m3', 'hecho', 'fecha'];
     const rows = [];
     for (const task of tasks) {
         for (const ref of task.elements) {
@@ -303,6 +307,7 @@ export function elementsToCsv(tasks, shapesById, metersPerUnit = 1) {
             const width = Number(ref.width) || 0;
             const depth = Number(ref.depth) || 0;
             rows.push([
+                activityNames.get(task.activityId) || '',
                 task.title,
                 ref.id,
                 ref.kind,
@@ -319,7 +324,7 @@ export function elementsToCsv(tasks, shapesById, metersPerUnit = 1) {
     return '\ufeff' + [header.join(';'), ...rows].join('\r\n');
 }
 
-export function projectToJson(project, tasks, { includeDxf = false, resources = [], places = [] } = {}) {
+export function projectToJson(project, tasks, { includeDxf = false, resources = [], places = [], activities = [] } = {}) {
     return JSON.stringify({
         formato: 'dxf-tareas',
         version: 2,
@@ -335,6 +340,7 @@ export function projectToJson(project, tasks, { includeDxf = false, resources = 
             actualizado: project.updatedAt,
             dxf: includeDxf ? project.dxfText : undefined
         },
+        actividades: activities,
         recursos: resources,
         ubicaciones: places,
         tareas: tasks
