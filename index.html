@@ -127,7 +127,12 @@
             <section class="tab-panel active" data-panel="tareas">
                 <div id="task-summary" class="summary"></div>
                 <div id="progress-summary" class="progress-summary"></div>
-                <div class="filters">
+                <div class="layer-actions">
+                    <button class="ghost small" id="btn-new-activity">+ Actividad</button>
+                    <button class="ghost small" id="btn-clear-activity" hidden>Ver todo el plano</button>
+                    <button class="ghost small" id="btn-toggle-filters">Filtros</button>
+                </div>
+                <div class="filters hidden" id="task-filters">
                     <input type="search" id="filter-text" placeholder="Buscar tarea, recurso o capa">
                     <div class="filter-row">
                         <select id="filter-status"><option value="todas">Todos los estados</option></select>
@@ -219,6 +224,9 @@
         <form id="task-form" class="form">
             <label>Titulo
                 <input type="text" id="task-title" required maxlength="120" placeholder="Ej: Instalar cerradura de acceso">
+            </label>
+            <label>Actividad
+                <select id="task-activity"></select>
             </label>
             <div class="form-row">
                 <label>Estado
@@ -377,6 +385,33 @@
                 <div>
                     <button type="button" class="btn" id="btn-move-place">Mover</button>
                     <button type="button" class="btn" data-close="place-modal">Cancelar</button>
+                    <button type="submit" class="btn primary">Guardar</button>
+                </div>
+            </footer>
+        </form>
+    </div>
+</div>
+
+<!-- ------------------------------ Dialogo de actividad ------------------------------ -->
+<div id="activity-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="activity-modal-title">
+    <div class="modal-card">
+        <header class="modal-head">
+            <h2 id="activity-modal-title">Nueva actividad</h2>
+            <button class="icon-btn" data-close="activity-modal" aria-label="Cerrar">✕</button>
+        </header>
+        <form id="activity-form" class="form">
+            <label>Nombre
+                <input type="text" id="activity-name" required maxlength="120" placeholder="Ej: Excavacion, Tendido, Tapado">
+            </label>
+            <label>Color en el plano
+                <div id="activity-colors" class="color-row"></div>
+            </label>
+            <p class="muted">Las tareas de esta actividad se llamaran "Nombre tramo 1", "tramo 2"…
+                y su avance se suma ponderado por la longitud de cada tramo.</p>
+            <footer class="modal-foot">
+                <button type="button" class="btn danger" id="btn-delete-activity" hidden>Eliminar</button>
+                <div>
+                    <button type="button" class="btn" data-close="activity-modal">Cancelar</button>
                     <button type="submit" class="btn primary">Guardar</button>
                 </div>
             </footer>

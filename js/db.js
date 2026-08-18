@@ -5,11 +5,12 @@
  */
 
 const DB_NAME = 'dxf-tareas';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE_PROJECTS = 'projects';
 const STORE_TASKS = 'tasks';
 const STORE_RESOURCES = 'resources';
 const STORE_PLACES = 'places';
+const STORE_ACTIVITIES = 'activities';
 const LS_KEY = 'dxf-tareas:fallback';
 
 let dbPromise = null;
@@ -36,6 +37,11 @@ function openDb() {
             // v3: puntos del plano donde se ubican esos recursos.
             if (!db.objectStoreNames.contains(STORE_PLACES)) {
                 const store = db.createObjectStore(STORE_PLACES, { keyPath: 'id' });
+                store.createIndex('projectId', 'projectId', { unique: false });
+            }
+            // v4: actividades que agrupan las tareas (excavacion, tendido...).
+            if (!db.objectStoreNames.contains(STORE_ACTIVITIES)) {
+                const store = db.createObjectStore(STORE_ACTIVITIES, { keyPath: 'id' });
                 store.createIndex('projectId', 'projectId', { unique: false });
             }
         };
@@ -79,6 +85,7 @@ function readFallback() {
     if (!Array.isArray(data.tasks)) data.tasks = [];
     if (!Array.isArray(data.resources)) data.resources = [];
     if (!Array.isArray(data.places)) data.places = [];
+    if (!Array.isArray(data.activities)) data.activities = [];
     return data;
 }
 
@@ -152,6 +159,8 @@ export async function deleteProject(id) {
     await Promise.all(resources.map((resource) => deleteResource(resource.id)));
     const places = await listPlaces(id);
     await Promise.all(places.map((place) => deletePlace(place.id)));
+    const activities = await listActivities(id);
+    await Promise.all(activities.map((activity) => deleteActivity(activity.id)));
     return withDb(
         (db) => tx(db, [STORE_PROJECTS], 'readwrite', (t) => t.objectStore(STORE_PROJECTS).delete(id)),
         () => {
@@ -280,6 +289,47 @@ export async function deletePlace(id) {
         () => {
             const data = readFallback();
             data.places = data.places.filter((place) => place.id !== id);
+            writeFallback(data);
+        }
+    );
+}
+
+/* ------------------------------ actividades ----------------------------- */
+
+export async function saveActivity(activity) {
+    activity.updatedAt = Date.now();
+    return withDb(
+        (db) => tx(db, [STORE_ACTIVITIES], 'readwrite', (t) => t.objectStore(STORE_ACTIVITIES).put(activity)),
+        () => {
+            const data = readFallback();
+            const i = data.activities.findIndex((a) => a.id === activity.id);
+            if (i >= 0) data.activities[i] = activity; else data.activities.push(activity);
+            writeFallback(data);
+        }
+    );
+}
+
+export async function saveActivities(activities) {
+    for (const activity of activities) await saveActivity(activity);
+}
+
+export async function listActivities(projectId) {
+    const activities = await withDb(
+        async (db) => {
+            const t = db.transaction([STORE_ACTIVITIES], 'readonly');
+            return req(t.objectStore(STORE_ACTIVITIES).index('projectId').getAll(projectId));
+        },
+        () => readFallback().activities.filter((a) => a.projectId === projectId)
+    );
+    return (activities || []).sort((a, b) => (a.order || 0) - (b.order || 0));
+}
+
+export async function deleteActivity(id) {
+    return withDb(
+        (db) => tx(db, [STORE_ACTIVITIES], 'readwrite', (t) => t.objectStore(STORE_ACTIVITIES).delete(id)),
+        () => {
+            const data = readFallback();
+            data.activities = data.activities.filter((a) => a.id !== id);
             writeFallback(data);
         }
     );

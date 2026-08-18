@@ -30,6 +30,27 @@ sin servidor ni base de datos remota.
     recursos y ubicaciones a CSV, o una copia completa en `.json` que incluye el
     plano.
 
+## Actividades y sus tramos
+
+La obra se organiza en dos niveles, como se lleva en terreno:
+
+- **Actividades**: excavacion, tendido, tapado… Son las partidas secuenciales.
+- **Tramos**: dentro de cada actividad, "Excavacion tramo 1", "tramo 2"…, cada
+  uno vinculado a los elementos del plano que le corresponden.
+
+En la pestana *Tareas*, el boton **+ Actividad** crea la partida y cada grupo
+muestra su avance sumado: *"Excavacion · 4 tramo(s) · 5,00 de 10,0 · 50%"*,
+ponderado por la longitud real de cada tramo. El boton **+ Tramo de
+Excavacion** abre una tarea ya numerada y lista para elegir sus elementos.
+
+**Tocando el nombre de la actividad, todo el plano muestra su avance**: verde lo
+ejecutado, rojo lo pendiente, y el resto del dibujo atenuado. Es la vista para
+responder "como va la excavacion" de un vistazo. *Ver todo el plano* la quita.
+
+Con una actividad seleccionada, cualquier tarea nueva entra en ella y se numera
+sola. Las actividades se ordenan con ↑ ↓, y al eliminar una sus tramos no se
+borran: quedan sin actividad.
+
 ## Tareas por tramos
 
 Una excavacion o un tendido rara vez son un solo elemento del dibujo. Una tarea
@@ -186,6 +207,7 @@ js/resources.js         modelo de personal y maquinaria
 js/places.js            puntos del plano donde se ubican los recursos
 js/edits.js             geometria de divisiones y uniones
 js/timeline.js          estado de la obra en una fecha y curva de avance
+js/activities.js        actividades que agrupan las tareas y su avance
 js/app.js               union de todo y logica de pantalla
 sw.js                   service worker (uso sin conexion)
 manifest.webmanifest    instalacion como aplicacion
