@@ -1,6 +1,6 @@
 /* Service worker: deja la aplicacion disponible sin conexion. */
 
-const CACHE = 'tareas-dxf-v5';
+const CACHE = 'tareas-dxf-v6';
 const ASSETS = [
     './',
     './index.html',

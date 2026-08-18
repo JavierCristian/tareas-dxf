@@ -658,3 +658,26 @@ textarea { resize: vertical; }
     .timeline { left: 8px; right: 8px; }
     .timeline-head strong { font-size: 13.5px; }
 }
+
+/* ------------------------- Avance por metraje ----------------------------- */
+
+.advance-from {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 9px 12px;
+    font-size: 13px;
+}
+.advance-from span { flex: 1; min-width: 140px; color: var(--muted); }
+.advance-preview {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    border-left: 3px solid var(--accent);
+    padding: 6px 0 6px 10px;
+}
+.advance-preview b { color: #86efac; }
+.advance-preview i { font-style: normal; color: #fca5a5; }

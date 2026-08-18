@@ -27,6 +27,8 @@ export class Viewer {
         this.markers = [];
         this.highlight = null;
         this.taskHighlight = null;
+        this.dimOthers = false;
+        this.highlightPoint = null;
         this.dirty = false;
         this.pointers = new Map();
         this.gesture = null;
@@ -63,6 +65,12 @@ export class Viewer {
 
     setMarkers(markers) {
         this.markers = markers || [];
+        this.requestRender();
+    }
+
+    /** Marca visible desde donde se esta midiendo un avance. */
+    setHighlightPoint(point) {
+        this.highlightPoint = point;
         this.requestRender();
     }
 
@@ -349,6 +357,9 @@ export class Viewer {
         ctx.lineJoin = 'round';
         ctx.lineCap = 'round';
         ctx.lineWidth = 1.15;
+        // Con una actividad seleccionada, el resto del plano se apaga para que
+        // resalte solo lo suyo.
+        if (this.dimOthers) ctx.globalAlpha = 0.25;
         for (const [color, bucket] of byColor) {
             ctx.strokeStyle = color;
             ctx.beginPath();
@@ -389,6 +400,8 @@ export class Viewer {
             ctx.restore();
         }
 
+        ctx.globalAlpha = 1;
+        this.drawHighlightPoint(ctx);
         this.drawTaskHighlight(ctx);
         this.drawSelection(ctx);
         this.drawMarkers(ctx);
@@ -424,8 +437,9 @@ export class Viewer {
      * Resalta los tramos de una tarea: verde los ejecutados, el color del
      * estado los pendientes. Se dibuja como un halo grueso bajo el trazo.
      */
-    setTaskHighlight(map) {
+    setTaskHighlight(map, dimOthers = false) {
         this.taskHighlight = map && map.size ? map : null;
+        this.dimOthers = this.taskHighlight ? !!dimOthers : false;
         this.requestRender();
     }
 
@@ -441,9 +455,9 @@ export class Viewer {
         if (!byColor.size) return;
 
         ctx.save();
-        ctx.lineWidth = 6;
+        ctx.lineWidth = this.dimOthers ? 4.5 : 6;
         ctx.lineCap = 'round';
-        ctx.globalAlpha = 0.45;
+        ctx.globalAlpha = this.dimOthers ? 0.95 : 0.45;
         for (const [color, shapes] of byColor) {
             ctx.strokeStyle = color;
             ctx.beginPath();
@@ -458,6 +472,20 @@ export class Viewer {
             }
             ctx.stroke();
         }
+        ctx.restore();
+    }
+
+    drawHighlightPoint(ctx) {
+        if (!this.highlightPoint) return;
+        const p = this.worldToScreen(this.highlightPoint.x, this.highlightPoint.y);
+        ctx.save();
+        ctx.strokeStyle = '#2f81f7';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 9, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(47,129,247,0.35)';
+        ctx.fill();
         ctx.restore();
     }
 
