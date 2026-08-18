@@ -681,3 +681,23 @@ textarea { resize: vertical; }
 }
 .advance-preview b { color: #86efac; }
 .advance-preview i { font-style: normal; color: #fca5a5; }
+
+/* --------------------------- Aviso de version nueva ------------------------ */
+
+.update-banner {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: calc(16px + var(--safe-bottom));
+    z-index: 70;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(21, 29, 39, 0.98);
+    box-shadow: var(--shadow);
+    font-size: 13.5px;
+    max-width: calc(100% - 24px);
+}

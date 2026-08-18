@@ -35,6 +35,10 @@ import {
     equalCuts, projectOnPath, pathLength, chain, joinTolerance, MIN_PART_RATIO
 } from './edits.js';
 
+/* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
+   asi se puede comprobar de un vistazo que version esta corriendo. */
+export const APP_VERSION = '7';
+
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -95,9 +99,13 @@ function init() {
 
     refreshRecent();
     registerServiceWorker();
+    $('#btn-update-now').addEventListener('click', () => location.reload());
+    $('#btn-update-later').addEventListener('click', () => $('#update-banner').classList.add('hidden'));
 
     // Acceso desde la consola del navegador para diagnosticar en obra.
-    window.tareasDxf = { state, get viewer() { return viewer; }, setTimelineDate };
+    window.tareasDxf = { version: APP_VERSION, state, get viewer() { return viewer; }, setTimelineDate };
+    const badge = $('#app-version');
+    if (badge) badge.textContent = APP_VERSION;
 }
 
 function fillSelect(select, options, allValue, allLabel) {
@@ -107,8 +115,29 @@ function fillSelect(select, options, allValue, allLabel) {
 }
 
 function registerServiceWorker() {
-    if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
-    navigator.serviceWorker.register('sw.js').catch(() => { /* sin modo offline */ });
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register('sw.js').then((registration) => {
+        // Si llega una version nueva, se avisa en vez de dejarla esperando en
+        // silencio: es la causa tipica de "no me aparece lo nuevo".
+        registration.addEventListener('updatefound', () => {
+            const fresh = registration.installing;
+            if (!fresh) return;
+            fresh.addEventListener('statechange', () => {
+                if (fresh.state === 'installed' && navigator.serviceWorker.controller) {
+                    showUpdateBanner();
+                }
+            });
+        });
+        // Busca actualizaciones al abrir y cada media hora si queda abierta.
+        registration.update();
+        setInterval(() => registration.update(), 30 * 60 * 1000);
+    }).catch(() => { /* sin modo sin conexion */ });
+}
+
+function showUpdateBanner() {
+    const banner = $('#update-banner');
+    if (!banner || !banner.classList.contains('hidden')) return;
+    banner.classList.remove('hidden');
 }
 
 /* ------------------------------------------------------------------ */

@@ -45,7 +45,8 @@
             <ul id="recent-list" class="recent-list"><li class="empty">Todavia no hay proyectos en este dispositivo.</li></ul>
         </div>
 
-        <p class="foot">Funciona sin conexion. Todo se guarda en este dispositivo (<span id="storage-mode">IndexedDB</span>).</p>
+        <p class="foot">Funciona sin conexion. Todo se guarda en este dispositivo
+            (<span id="storage-mode">IndexedDB</span>) · version <span id="app-version">—</span></p>
     </div>
 </section>
 
@@ -455,6 +456,13 @@
             </footer>
         </div>
     </div>
+</div>
+
+<!-- ------------------------------ Aviso de version nueva ------------------------------ -->
+<div id="update-banner" class="update-banner hidden">
+    <span>Hay una version nueva de la aplicacion.</span>
+    <button class="btn primary small" id="btn-update-now">Actualizar</button>
+    <button class="ghost small" id="btn-update-later">Despues</button>
 </div>
 
 <!-- ------------------------------ Superposicion ------------------------------ -->
