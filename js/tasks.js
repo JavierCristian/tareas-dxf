@@ -40,6 +40,10 @@ export function createTask(projectId, patch = {}) {
         start: '',      // inicio planificado (YYYY-MM-DD)
         due: '',        // termino planificado
         activityId: null,  // actividad a la que pertenece (excavacion, tendido...)
+        duration: null,    // dias fijos; si no, salen del rendimiento
+        ternas: 1,         // ternas o triadas del tramo (cable de potencia)
+        predecessors: [],  // tramos previos, cuando se enlazan a mano
+        linksAuto: true,   // false = el usuario maneja los antecesores de este tramo
         elements: [],   // [{id, kind, layer, x, y}]
         resources: [],  // ids de personal y maquinaria asignados
         progress: 0,    // avance declarado 0-100

@@ -26,8 +26,9 @@ sin servidor ni base de datos remota.
    del estado, y las filtra por texto, estado, capa y recurso.
 9. **Calcula el avance ponderado** por longitud y por area, no solo por numero
    de tareas.
-10. **Programa las actividades** con duracion, antecesores y desfase, y calcula
-    fechas, holguras y ruta critica (ver mas abajo).
+10. **Programa la obra tramo a tramo**: la duracion sale del rendimiento de
+    cada actividad y de la cantidad que el plano ya conoce, y cada tramo espera
+    solo al tramo de su misma ubicacion (ver mas abajo).
 11. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar tareas,
     recursos y ubicaciones a CSV, o una copia completa en `.json` que incluye el
     plano.
@@ -104,33 +105,80 @@ falta para registrar avance.
 
 ## Programa maestro
 
-La pestana *Programa* calcula las fechas de la obra como cualquier software de
-planificacion, a partir de dos datos por actividad:
+La pestaña *Programa* calcula las fechas de la obra como cualquier software de
+planificacion, con dos diferencias que vienen de como se ejecuta realmente una
+obra lineal.
 
-- **Duracion** en dias trabajados.
-- **Antecesores**: de que actividades depende. El enlace es fin-inicio, con un
-  **desfase** en dias que puede ser positivo (esperar mas) o negativo
-  (solaparlas). Se marcan con las fichas *Empieza despues de:*.
+### 1. El enlace es entre tramos, no entre actividades
+
+Si la excavacion entre WTG18 y WTG12 termino, el tendido de ese trecho puede
+partir aunque el resto del parque siga excavandose. No hay que esperar a que
+termine toda la excavacion.
+
+Eso no se configura tramo por tramo: se declara una sola vez que **"Tendido de
+cobre va despues de Excavacion"** y la aplicacion baja ese enlace a cada par de
+tramos que **comparten los mismos elementos del plano**. Como la excavacion y el
+tendido de un mismo trecho van sobre la misma zanja del dibujo, el enlace sale
+solo:
+
+```
+Excavacion WTG18-WTG12   17/08 → 20/08
+Tendido    WTG18-WTG12   21/08 → 24/08   ← parte al terminar SU excavacion
+Excavacion WTG12-WTG07   21/08 → 24/08   ← mientras tanto sigue la excavacion
+```
+
+Cada tramo muestra de que otros tramos depende. Cuando la obra no sigue al
+dibujo, el boton **✎ A mano** congela esa lista y deja agregar o quitar
+antecesores puntuales; **↺ Automatico** vuelve a deducirlos del plano.
+
+Si un tramo tiene actividad antecesora pero ningun tramo vecino que la cumpla,
+se avisa arriba ("sin antecesor en su ubicacion") en vez de dejarlo partir sin
+que nadie lo note.
+
+### 2. Los dias no se escriben: salen del rendimiento
+
+En la sub-pestaña *Rendimientos*, cada actividad define **cuanto avanza por
+dia** y en que unidad se mide:
+
+| Unidad | Para que | De donde sale la cantidad |
+| --- | --- | --- |
+| m³ por dia | Excavaciones | largo × ancho × profundidad del tramo |
+| metros lineales por dia | Tendidos simples, tapados, señalizacion | largo del tramo |
+| metros de conductor por dia | Cable de potencia | largo × ternas del tramo × 3 fases (R, S, T) |
+| unidades por dia | Camaras, fundaciones, postes | cuenta de elementos del tramo |
+
+Con 120 m³/dia, una zanja de 600 m con seccion de 0,6 × 1,2 son 432 m³ y por lo
+tanto 4 dias; la de 300 m son 2 dias. Las ternas de cada tramo se indican en su
+ficha (el troncal lleva mas que el ramal) y el campo aparece solo cuando la
+actividad se mide en metros de conductor. Un tramo puede fijar su duracion a
+mano si hace falta, y esa manda sobre el calculo.
+
+### 3. Frentes de trabajo
+
+Cada actividad indica **cuantos tramos puede atacar a la vez**. Con una sola
+retroexcavadora los tramos van uno tras otro; con dos, avanzan en paralelo y la
+obra se acorta sola. El programa reparte los tramos entre los frentes atendiendo
+primero al que ya puede partir, y muestra a que frente le toco cada uno.
+
+### Lo que sale de todo eso
+
+- **Fechas** de cada tramo y de cada actividad (de la primera a la ultima).
+- **Holgura**: cuantos dias puede atrasarse un tramo sin mover el fin de obra.
+- **Ruta critica**: los tramos sin holgura, marcados **CRITICA**, contando
+  tambien los enlaces que impone compartir cuadrilla.
+- Una **barra** por tramo y por actividad con su lugar en el programa, rellena
+  con lo realmente ejecutado en terreno.
+- Aviso si los antecesores quedan en circulo: esos tramos quedan sin fechar en
+  vez de calcular cualquier cosa.
 
 Arriba se fija el **inicio de obra** y que dias se trabaja (todos, lunes a
-sabado, o lunes a viernes); los feriados de esa semana no cuentan. Con eso, cada
-fila muestra:
+sabado, o lunes a viernes).
 
-- Las **fechas calculadas** de inicio y termino.
-- La **holgura**: cuantos dias puede atrasarse sin mover el fin de la obra.
-- La marca **CRITICA** cuando no tiene holgura. La cadena de actividades
-  criticas es la **ruta critica**, y aparece resumida arriba.
-- Una **barra** con el tramo que ocupa en el programa, rellena con lo realmente
-  ejecutado en terreno.
-
-Si dos actividades se enlazan en circulo (A espera a B y B espera a A) se avisa
-y esas actividades quedan sin fechar, en vez de calcular cualquier cosa.
-
-Estas fechas alimentan la linea de tiempo: un tramo sin fechas propias hereda
-las de su actividad, de modo que la curva de avance planificado sale del
-programa. Ademas, al registrar avance en una actividad cuyo antecesor todavia no
-termina, se avisa en pantalla ("Ojo: Excavacion va en 40%"). Es solo un aviso: en
-terreno a veces se adelanta a proposito.
+Estas fechas alimentan la linea de tiempo: un tramo sin fechas propias usa las
+de su programa, de modo que la curva de avance planificado sale del programa
+maestro. Ademas, al registrar avance en un tramo cuyo antecesor todavia no
+termina, se avisa en pantalla ("Ojo: Excavacion WTG18-WTG12 va en 0%"). Es solo
+un aviso: en terreno a veces se adelanta a proposito.
 
 ## Linea de tiempo
 
@@ -249,7 +297,7 @@ js/places.js            puntos del plano donde se ubican los recursos
 js/edits.js             geometria de divisiones y uniones
 js/timeline.js          estado de la obra en una fecha y curva de avance
 js/activities.js        actividades que agrupan las tareas y su avance
-js/schedule.js          programa maestro: fechas, holguras y ruta critica
+js/schedule.js          programa maestro: rendimientos, fechas por tramo y ruta critica
 js/app.js               union de todo y logica de pantalla
 sw.js                   service worker (uso sin conexion)
 manifest.webmanifest    instalacion como aplicacion

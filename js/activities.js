@@ -2,8 +2,9 @@
  * Actividades: el nivel de arriba de la obra (excavacion, tendido, tapado...).
  * Cada actividad agrupa sus tareas, que son los tramos en que se ejecuta.
  *
- * Aqui viven tambien los campos que usara el programa maestro (duracion y
- * antecesores); por ahora se guardan sin calcular fechas con ellos.
+ * Aqui viven tambien los campos del programa maestro: el rendimiento con que
+ * se calculan los dias de cada tramo, los frentes de trabajo y las actividades
+ * antecesoras.
  */
 
 import { newId } from './db.js';
@@ -22,7 +23,9 @@ export function createActivity(projectId, patch = {}) {
         name: '',
         order: 0,
         color: ACTIVITY_COLORS[0],
-        duration: null,      // dias (programa maestro)
+        rate: { unit: 'ml', value: 0 },  // rendimiento: cuanto se avanza por dia
+        crews: 1,            // frentes: cuantos tramos se atacan a la vez
+        duration: null,      // dias por tramo si no hay rendimiento (compatibilidad)
         predecessors: [],    // ids de actividades previas (programa maestro)
         collapsed: false,
         createdAt: now,
@@ -40,6 +43,8 @@ export function normalizeActivity(raw, projectId) {
         id: raw.id || base.id,
         projectId,
         name: String(raw.name || '').slice(0, 120),
+        rate: raw.rate && typeof raw.rate === 'object' ? { ...base.rate, ...raw.rate } : base.rate,
+        crews: Number(raw.crews) >= 1 ? Math.round(Number(raw.crews)) : 1,
         predecessors: Array.isArray(raw.predecessors) ? raw.predecessors : []
     };
 }
