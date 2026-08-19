@@ -79,18 +79,26 @@ datos:
 
 ### Avance por metraje
 
-La forma natural de registrar en terreno es por metros, no por tramos ya
-dibujados. Tocando un tramo y usando **Registrar avance**:
+La forma natural de registrar en terreno es por metros. Tocando un tramo y
+usando **Registrar avance**:
 
 1. Se mide desde el extremo mas cercano al punto que tocaste (un boton invierte
    el extremo, y una marca azul en el plano muestra desde donde se cuenta).
 2. Escribes los metros ejecutados y la fecha.
-3. La polilinea **se divide sola en ese punto**: la parte medida queda ejecutada
-   y el resto pendiente, con el avance de la actividad recalculado.
+3. Esos metros quedan anotados **sobre el mismo elemento**, sin partirlo, y el
+   avance de la actividad se recalcula.
 
-Si los metros cubren el tramo completo, no se divide: queda todo ejecutado. Cada
-division guarda como estaban los tramos antes, de modo que *Deshacer* devuelve
-la actividad exactamente a su estado anterior.
+**El avance no divide el dibujo.** Sobre la misma zanja conviven la excavacion,
+el tendido y el tapado, y cada actividad lleva sus propios metros: la excavacion
+puede ir en el metro 35 y el tendido en el 20 sin estorbarse. En el plano, cada
+actividad pinta en verde solo la parte que ella ejecuto.
+
+Los avances sucesivos **continuan donde quedo** el anterior por ese extremo, y
+se fusionan solos. Si los metros superan lo que falta, el tramo queda completo.
+
+Dividir y unir elementos sigue existiendo como herramienta aparte (panel
+*Elemento*), util para separar frentes o responsabilidades, pero ya no hace
+falta para registrar avance.
 
 ## Linea de tiempo
 

@@ -743,3 +743,5 @@ textarea { resize: vertical; }
 }
 .color-chip.on { border-color: #fff; }
 .ghost.on { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+.element-partial { font-size: 11.5px; color: #7fd1ff; }
+.mark-done.partial { border-color: rgba(127, 209, 255, 0.5); color: #7fd1ff; background: rgba(127, 209, 255, 0.08); }

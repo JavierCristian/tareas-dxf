@@ -437,8 +437,12 @@ export class Viewer {
      * Resalta los tramos de una tarea: verde los ejecutados, el color del
      * estado los pendientes. Se dibuja como un halo grueso bajo el trazo.
      */
-    setTaskHighlight(map, dimOthers = false) {
-        this.taskHighlight = map && map.size ? map : null;
+    /**
+     * Resaltado de avance: lista de {pts, color}. Se reciben ya recortados
+     * porque un mismo elemento puede llevar solo unos metros ejecutados.
+     */
+    setTaskHighlight(overlays, dimOthers = false) {
+        this.taskHighlight = overlays && overlays.length ? overlays : null;
         this.dimOthers = this.taskHighlight ? !!dimOthers : false;
         this.requestRender();
     }
@@ -446,28 +450,27 @@ export class Viewer {
     drawTaskHighlight(ctx) {
         if (!this.taskHighlight) return;
         const byColor = new Map();
-        for (const [id, color] of this.taskHighlight) {
-            const shape = this.byId.get(id);
-            if (!shape || !this.isVisible(shape)) continue;
-            if (!byColor.has(color)) byColor.set(color, []);
-            byColor.get(color).push(shape);
+        for (const overlay of this.taskHighlight) {
+            if (!overlay.pts || overlay.pts.length < 4) continue;
+            if (!byColor.has(overlay.color)) byColor.set(overlay.color, []);
+            byColor.get(overlay.color).push(overlay.pts);
         }
         if (!byColor.size) return;
 
         ctx.save();
         ctx.lineWidth = this.dimOthers ? 4.5 : 6;
         ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
         ctx.globalAlpha = this.dimOthers ? 0.95 : 0.45;
-        for (const [color, shapes] of byColor) {
+        for (const [color, paths] of byColor) {
             ctx.strokeStyle = color;
             ctx.beginPath();
-            for (const shape of shapes) {
-                if (shape.kind === 'point' || shape.kind === 'text') {
-                    const p = this.worldToScreen(shape.pts[0], shape.pts[1]);
-                    ctx.moveTo(p.x + 8, p.y);
-                    ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
-                } else {
-                    this.tracePath(ctx, shape, false);
+            for (const pts of paths) {
+                const first = this.worldToScreen(pts[0], pts[1]);
+                ctx.moveTo(first.x, first.y);
+                for (let i = 2; i + 1 < pts.length; i += 2) {
+                    const p = this.worldToScreen(pts[i], pts[i + 1]);
+                    ctx.lineTo(p.x, p.y);
                 }
             }
             ctx.stroke();

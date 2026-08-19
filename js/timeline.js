@@ -7,7 +7,7 @@
  */
 
 import { measure } from './scene.js';
-import { taskQuantity, taskProgress, tracksElements } from './tasks.js';
+import { taskQuantity, taskProgress, tracksElements, refDoneLengthAt, refSpans, isRefDone } from './tasks.js';
 
 export const DAY = 86400000;
 
@@ -47,6 +47,7 @@ export function projectRange(tasks, places) {
         if (task.due) dates.push(task.due);
         for (const ref of task.elements || []) {
             if (ref.doneAt) dates.push(ref.doneAt);
+            for (const span of ref.spans || []) if (span.date) dates.push(span.date);
         }
     }
     for (const place of places || []) {
@@ -91,27 +92,32 @@ export function taskStateAt(task, shapesById, date, metersPerUnit = 1) {
         if (!shape) continue;
         const m = measure(shape);
         total.count++;
-        const executed = !!ref.done && !!ref.doneAt && ref.doneAt <= date;
-        if (executed) {
-            done.count++;
-            doneIds.add(ref.id);
+        if (!m) {
+            if (ref.done && ref.doneAt && ref.doneAt <= date) { done.count++; doneIds.add(ref.id); }
+            continue;
         }
-        if (!m) continue;
 
-        const isArea = shape.closed && m.area;
-        if (isArea) {
+        if (shape.closed && m.area) {
             total.area += m.area;
-            if (executed) done.area += m.area;
+            if (ref.done && ref.doneAt && ref.doneAt <= date) {
+                done.area += m.area;
+                done.count++;
+                doneIds.add(ref.id);
+            }
         } else {
+            // Metros que estaban ejecutados a esa fecha, no el tramo entero.
+            const executed = refDoneLengthAt(ref, m.length, date);
             total.length += m.length;
-            if (executed) done.length += m.length;
+            done.length += executed;
+            if (executed > 0) doneIds.add(ref.id);
+            if (executed >= m.length - 1e-9) done.count++;
         }
         const width = Number(ref.width);
         const depth = Number(ref.depth);
-        if (width > 0 && depth > 0) {
-            const volume = m.length * metersPerUnit * width * depth;
-            total.volume += volume;
-            if (executed) done.volume += volume;
+        if (width > 0 && depth > 0 && m.length) {
+            const perUnit = metersPerUnit * width * depth;
+            total.volume += m.length * perUnit;
+            done.volume += refDoneLengthAt(ref, m.length, date) * perUnit;
         }
     }
 
