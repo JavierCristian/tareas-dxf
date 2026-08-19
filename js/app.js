@@ -37,7 +37,8 @@ import {
     formatDate, todayISO as todayDate
 } from './timeline.js';
 import {
-    CALENDARS, calendarOf, computeSchedule, workdaysBetween, taskDates, unfinishedPredecessors
+    CALENDARS, calendarOf, computeSchedule, workdaysBetween, taskDates, taskLinks,
+    unfinishedPredecessors, RATE_UNITS, rateUnitOf, rateOf, crewsOf, ternasOf, taskAmount
 } from './schedule.js';
 import {
     applyEdits, makeEdit, removeEdit, editOfShape, canSplit, splitOpen, splitClosed,
@@ -46,7 +47,7 @@ import {
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '10';
+export const APP_VERSION = '11';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -65,7 +66,8 @@ const state = {
     places: [],
     activities: [],
     activeActivity: null,   // actividad resaltada en el plano
-    schedule: null,         // ultimo programa calculado {plan, cycle, from, to}
+    schedule: null,         // ultimo programa calculado (tramo a tramo)
+    scheduleClosed: new Set(), // actividades plegadas en la pestaña Programa
     selection: [],          // ids de figuras
     multi: false,
     filters: { text: '', status: 'todas', layer: 'todas', resource: 'todas' },
@@ -328,6 +330,9 @@ function loadIntoApp(project, scene, tasks, resources = [], places = [], activit
     state.places = places;
     state.activities = activities;
     state.activeActivity = null;
+    state.schedule = null;
+    // El programa se ve entero; solo en obras muy grandes arranca plegado.
+    state.scheduleClosed = new Set(tasks.length > 60 ? activities.map((a) => a.id) : []);
     state.selection = [];
     stopTimeline();
     state.filters = { text: '', status: 'todas', layer: 'todas', resource: 'todas' };
@@ -969,6 +974,7 @@ function wirePanel() {
         tab.addEventListener('click', () => {
             for (const other of $$('.tab')) other.classList.toggle('active', other === tab);
             for (const panel of $$('.tab-panel')) panel.classList.toggle('active', panel.dataset.panel === tab.dataset.tab);
+            if (tab.dataset.tab === 'programa') renderSchedule();
         });
     }
     $('#panel-handle').addEventListener('click', () => togglePanel(false));
@@ -1033,6 +1039,7 @@ function renderAll() {
     renderResources();
     renderPlaces();
     renderTasks();
+    renderSchedule();
     renderSelectionCard();
     renderElementPanel();
 }
@@ -1120,7 +1127,6 @@ function renderTasks() {
     const visibleIds = new Set(visible.map((task) => task.id));
     list.innerHTML = '';
     renderProgress();
-    renderSchedule();
 
     const stats = summarize(state.tasks);
     const summary = $('#task-summary');
@@ -1666,7 +1672,6 @@ function openActivityModal(activity, isNew = false) {
     state.activityDraft = { ...activity, isNew };
     $('#activity-modal-title').textContent = isNew ? 'Nueva actividad' : 'Editar actividad';
     $('#activity-name').value = activity.name || '';
-    $('#activity-duration').value = activity.duration > 0 ? String(activity.duration) : '';
     $('#btn-delete-activity').hidden = isNew;
     renderActivityColors();
     $('#activity-modal').classList.remove('hidden');
@@ -1711,6 +1716,7 @@ async function moveActivity(id, delta) {
     state.activities = sorted;
     await saveActivities(sorted);
     renderTasks();
+    renderSchedule();
 }
 
 function wireActivities() {
@@ -1736,8 +1742,6 @@ function wireActivities() {
         if (!draft) return;
         draft.name = $('#activity-name').value.trim();
         if (!draft.name) return;
-        const days = Number($('#activity-duration').value);
-        draft.duration = Number.isFinite(days) && days > 0 ? Math.round(days) : null;
 
         const isNew = draft.isNew;
         delete draft.isNew;
@@ -1749,6 +1753,7 @@ function wireActivities() {
 
         closeActivityModal();
         renderTasks();
+        renderSchedule();
         toast(isNew ? `Actividad "${draft.name}" creada.` : 'Actividad actualizada.');
     });
 
@@ -1784,56 +1789,88 @@ function wireActivities() {
 
         closeActivityModal();
         renderTasks();
+        renderSchedule();
         toast('Actividad eliminada.');
     });
 }
 
 /* ------------------------------------------------------------------ */
-/* Programa maestro: duraciones, antecesores y ruta critica            */
+/* Programa maestro: rendimientos, antecesores por tramo y ruta critica */
 /* ------------------------------------------------------------------ */
 
 function scheduleCalendarId() {
     return (state.project && state.project.workdays) || 'todos';
 }
 
-/** Recalcula el programa completo con lo que hay guardado en el proyecto. */
+/**
+ * Recalcula el programa completo. Es tramo a tramo: cada uno toma sus dias del
+ * rendimiento de su actividad y espera solo a los tramos de su misma ubicacion.
+ */
 function schedulePlan() {
-    if (!state.project) return { plan: new Map(), cycle: [], from: todayDate(), to: todayDate() };
-    state.schedule = computeSchedule(state.activities, {
+    if (!state.project) {
+        return { tasks: new Map(), activities: new Map(), cycle: [], orphans: [], from: todayDate(), to: todayDate() };
+    }
+    state.schedule = computeSchedule(state.activities, state.tasks, {
         start: state.project.scheduleStart || '',
-        calendar: scheduleCalendarId()
+        calendar: scheduleCalendarId(),
+        shapesById: state.shapesById,
+        metersPerUnit: state.unitScale
     });
     return state.schedule;
 }
 
+/** Fecha corta (17/08) para las filas: el año ya va en el resumen. */
+function shortDate(iso) {
+    if (!iso) return '';
+    const [, m, d] = iso.split('-');
+    return `${d}/${m}`;
+}
+
+function activityById(id) {
+    return state.activities.find((activity) => activity.id === id) || null;
+}
+
 function activityName(id) {
-    const activity = state.activities.find((a) => a.id === id);
+    const activity = activityById(id);
     return activity ? activity.name : '(actividad borrada)';
 }
 
+function taskById(id) {
+    return state.tasks.find((task) => task.id === id) || null;
+}
+
 /** Antecesores de una actividad como {id, lag}, tolerando el formato antiguo. */
-function linksOf(activity) {
+function activityLinks(activity) {
     return (activity.predecessors || []).map((entry) =>
         typeof entry === 'string' ? { id: entry, lag: 0 } : { id: entry.id, lag: Number(entry.lag) || 0 });
 }
 
-async function saveLinks(activity, links) {
-    activity.predecessors = links;
-    activity.updatedAt = Date.now();
+/** Guarda un cambio de actividad y refresca lo que dependa del programa. */
+async function patchActivity(activity, patch) {
+    Object.assign(activity, patch, { updatedAt: Date.now() });
     await saveActivity(activity);
+    renderSchedule();
+    renderTasks();
+    if (timelineActive()) renderTimeline();
+}
+
+/** Guarda un cambio de tramo hecho desde el programa. */
+async function patchTask(task, patch) {
+    Object.assign(task, patch, { updatedAt: Date.now() });
+    await saveTask(task);
     renderSchedule();
     if (timelineActive()) renderTimeline();
 }
 
 /**
  * Tareas con las fechas que les toca por programa. Las que tienen fecha propia
- * la conservan; las demas heredan el inicio y termino de su actividad, para que
- * el cursor y la curva comparen contra el plan real.
+ * la conservan; las demas heredan las de su tramo calculado, para que el cursor
+ * y la curva comparen contra el plan real.
  */
 function scheduledTasks() {
-    const { plan } = schedulePlan();
+    const schedule = schedulePlan();
     return state.tasks.map((task) => {
-        const dates = taskDates(task, plan);
+        const dates = taskDates(task, schedule);
         const start = dates.start || '';
         const due = dates.due || '';
         if (start === (task.start || '') && due === (task.due || '')) return task;
@@ -1841,109 +1878,135 @@ function scheduledTasks() {
     });
 }
 
+/* ------------------------------- el programa ------------------------------ */
+
 function renderSchedule() {
+    if (!state.project || !$('#schedule-list')) return;
+    const schedule = schedulePlan();
+    renderProgram(schedule);
+    renderRates(schedule);
+}
+
+function renderProgram(schedule) {
     const list = $('#schedule-list');
     const summary = $('#schedule-summary');
     const warning = $('#schedule-warning');
-    if (!list || !state.project) return;
 
-    const { plan, cycle, from, to } = schedulePlan();
-    $('#schedule-start').value = state.project.scheduleStart || from;
+    $('#schedule-start').value = state.project.scheduleStart || schedule.from;
     $('#schedule-calendar').value = scheduleCalendarId();
 
-    warning.hidden = !cycle.length;
-    if (cycle.length) {
-        warning.textContent = 'Hay un enlace de antecesores en circulo, asi que estas actividades '
-            + `quedan sin fechar: ${cycle.map(activityName).join(', ')}. Quita alguno de esos enlaces.`;
+    const avisos = [];
+    if (schedule.cycle.length) {
+        avisos.push('Hay antecesores en circulo, asi que estos tramos quedan sin fechar: '
+            + `${schedule.cycle.map((id) => (taskById(id) || {}).title || id).join(', ')}.`);
     }
+    if (schedule.orphans.length) {
+        const names = schedule.orphans.map((id) => (taskById(id) || {}).title || id);
+        avisos.push(`Sin antecesor en su ubicacion (parten libres): ${names.join(', ')}. `
+            + 'Comparte los mismos elementos del plano con su tramo previo, o enlazalos a mano.');
+    }
+    warning.hidden = !avisos.length;
+    warning.textContent = avisos.join(' ');
 
     summary.innerHTML = '';
     list.innerHTML = '';
     if (!state.activities.length) {
         list.innerHTML = '<li class="empty">Crea las actividades en la pestaña Tareas '
-            + '(excavacion, tendido, tapado…) y aqui les pones duracion y antecesores.</li>';
+            + '(excavacion, tendido, tapado…), dales rendimiento en Rendimientos y aqui saldran sus fechas.</li>';
         return;
     }
 
-    const days = workdaysBetween(from, to, calendarOf(scheduleCalendarId()));
-    summary.append(chip(`${state.activities.length} actividades`, null));
-    summary.append(chip(`${formatDate(from)} → ${formatDate(to)}`, '#2f81f7'));
-    summary.append(chip(`${days} dias trabajados`, null));
-
-    const critical = state.activities
-        .filter((activity) => (plan.get(activity.id) || {}).critical)
-        .sort((a, b) => (plan.get(a.id).start < plan.get(b.id).start ? -1 : 1));
+    const withTasks = state.activities.filter((a) => !(schedule.activities.get(a.id) || {}).empty);
+    const days = workdaysBetween(schedule.from, schedule.to, calendarOf(scheduleCalendarId()));
+    summary.append(chip(`${state.tasks.length} tramo(s)`, null));
+    if (withTasks.length) {
+        summary.append(chip(`${formatDate(schedule.from)} → ${formatDate(schedule.to)}`, '#2f81f7'));
+        summary.append(chip(`${days} dias trabajados`, null));
+    }
+    const critical = state.activities.filter((a) => (schedule.activities.get(a.id) || {}).critical);
     if (critical.length) {
         summary.append(chip(`Ruta critica: ${critical.map((a) => a.name).join(' → ')}`, '#ef4444'));
     }
 
-    const span = Math.max(1, daysBetween(from, to) + 1);
+    const span = Math.max(1, daysBetween(schedule.from, schedule.to) + 1);
     for (const activity of state.activities) {
-        list.append(renderScheduleRow(activity, plan, from, span));
+        list.append(renderProgramActivity(activity, schedule, span));
     }
 }
 
-/** Una fila del programa: duracion, antecesores, fechas calculadas y barra. */
-function renderScheduleRow(activity, plan, from, span) {
-    const entry = plan.get(activity.id);
-    const row = document.createElement('li');
-    row.className = 'schedule-row' + (entry && entry.critical ? ' critical' : '');
-    row.dataset.activity = activity.id;
-    row.innerHTML = `
-        <div class="schedule-top">
-            <span class="activity-dot"></span>
-            <strong></strong>
-            <label class="schedule-days">
-                <input type="number" min="1" step="1" placeholder="1"> dias
-            </label>
-        </div>
-        <div class="schedule-gantt"><i><span></span></i></div>
-        <div class="schedule-dates"></div>
-        <div class="schedule-links"><span>Empieza despues de:</span></div>`;
-
-    row.querySelector('.activity-dot').style.background = activity.color;
-    row.querySelector('strong').textContent = activity.name;
-
-    const duration = row.querySelector('.schedule-days input');
-    duration.value = activity.duration > 0 ? String(activity.duration) : '';
-    duration.addEventListener('change', async () => {
-        const value = Number(duration.value);
-        activity.duration = Number.isFinite(value) && value > 0 ? Math.round(value) : null;
-        activity.updatedAt = Date.now();
-        await saveActivity(activity);
-        renderSchedule();
-        if (timelineActive()) renderTimeline();
-    });
-
-    // Barra: el tramo que ocupa en el programa, rellena con lo ejecutado.
-    const progress = activityProgress(activity.id, state.tasks, state.shapesById, state.unitScale);
-    const bar = row.querySelector('.schedule-gantt i');
-    if (entry) {
-        const left = (daysBetween(from, entry.start) / span) * 100;
+/** Barra de un tramo del programa sobre la ventana completa de la obra. */
+function ganttBar(entry, schedule, span, pct, critical) {
+    const bar = document.createElement('div');
+    bar.className = 'schedule-gantt';
+    const fill = document.createElement('i');
+    if (entry && entry.start) {
+        const left = (daysBetween(schedule.from, entry.start) / span) * 100;
         const width = ((daysBetween(entry.start, entry.end) + 1) / span) * 100;
-        bar.style.left = `${Math.max(0, Math.min(99, left))}%`;
-        bar.style.width = `${Math.max(2, Math.min(100 - left, width))}%`;
-        if (entry.critical) bar.style.background = 'rgba(239, 68, 68, 0.4)';
-        bar.querySelector('span').style.width = `${Math.max(0, Math.min(100, progress.pct))}%`;
+        fill.style.left = `${Math.max(0, Math.min(99, left))}%`;
+        fill.style.width = `${Math.max(1.5, Math.min(100 - left, width))}%`;
+        if (critical) fill.style.background = 'rgba(239, 68, 68, 0.45)';
+        const done = document.createElement('span');
+        done.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+        fill.append(done);
     }
+    bar.append(fill);
+    return bar;
+}
 
-    const dates = row.querySelector('.schedule-dates');
-    if (entry) {
-        const range = document.createElement('span');
-        range.innerHTML = `<b>${formatDate(entry.start)}</b> a <b>${formatDate(entry.end)}</b>`;
-        dates.append(range, tag(`${Math.round(progress.pct)}% ejecutado`));
-        if (entry.broken) dates.append(tag('sin fechar: antecesores en circulo', true));
-        else if (entry.critical) {
+/** Cabecera de actividad en el programa, con sus tramos desplegables. */
+function renderProgramActivity(activity, schedule, span) {
+    const entry = schedule.activities.get(activity.id) || {};
+    const row = document.createElement('li');
+    row.className = 'schedule-row' + (entry.critical ? ' critical' : '');
+    const open = !state.scheduleClosed.has(activity.id);
+
+    const progress = activityProgress(activity.id, state.tasks, state.shapesById, state.unitScale);
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'schedule-top';
+    head.innerHTML = `
+        <span class="activity-caret"></span>
+        <span class="activity-dot"></span>
+        <strong></strong>
+        <span class="schedule-when"></span>`;
+    head.querySelector('.activity-caret').textContent = open ? '▼' : '▶';
+    head.querySelector('.activity-dot').style.background = activity.color;
+    head.querySelector('strong').textContent = activity.name;
+    head.querySelector('.schedule-when').textContent = entry.empty
+        ? 'sin tramos'
+        : `${shortDate(entry.start)} → ${shortDate(entry.end)}`;
+    head.addEventListener('click', () => {
+        if (open) state.scheduleClosed.add(activity.id); else state.scheduleClosed.delete(activity.id);
+        renderSchedule();
+    });
+    row.append(head);
+
+    if (!entry.empty) {
+        row.append(ganttBar(entry, schedule, span, progress.pct, entry.critical));
+
+        const meta = document.createElement('div');
+        meta.className = 'schedule-dates';
+        meta.append(tag(`${entry.days} dias`));
+        meta.append(tag(`${entry.tasks} tramo(s)`));
+        if (entry.amount > 0) meta.append(tag(`${formatNumber(entry.amount)} ${entry.unit}`));
+        if (entry.crews > 1) meta.append(tag(`${entry.crews} frentes`));
+        meta.append(tag(`${Math.round(progress.pct)}% ejecutado`));
+        if (entry.critical) {
             const flag = document.createElement('span');
             flag.className = 'schedule-flag';
             flag.textContent = 'CRITICA';
-            dates.append(flag);
-        } else dates.append(tag(`holgura ${entry.float} dia(s)`));
+            meta.append(flag);
+        } else meta.append(tag(`holgura ${entry.float} dia(s)`));
+        row.append(meta);
     }
 
-    // Antecesores: una ficha por cada otra actividad, con su desfase en dias.
-    const links = linksOf(activity);
-    const box = row.querySelector('.schedule-links');
+    // Antecesoras: la regla general, que luego se baja tramo a tramo.
+    const links = activityLinks(activity);
+    const box = document.createElement('div');
+    box.className = 'schedule-links';
+    const label = document.createElement('span');
+    label.textContent = 'Va despues de:';
+    box.append(label);
     for (const other of state.activities) {
         if (other.id === activity.id) continue;
         const current = links.find((link) => link.id === other.id);
@@ -1955,13 +2018,11 @@ function renderScheduleRow(activity, plan, from, span) {
         const name = document.createElement('span');
         name.textContent = other.name;
         chipEl.append(check, name);
-
         check.addEventListener('change', () => {
             const next = links.filter((link) => link.id !== other.id);
             if (check.checked) next.push({ id: other.id, lag: 0 });
-            saveLinks(activity, next);
+            patchActivity(activity, { predecessors: next });
         });
-
         if (current) {
             const lag = document.createElement('input');
             lag.type = 'number';
@@ -1969,9 +2030,10 @@ function renderScheduleRow(activity, plan, from, span) {
             lag.value = String(current.lag);
             lag.title = 'Dias de desfase: positivo espera, negativo solapa';
             lag.addEventListener('change', () => {
-                const value = Number(lag.value) || 0;
-                saveLinks(activity, links.map((link) =>
-                    (link.id === other.id ? { id: link.id, lag: Math.round(value) } : link)));
+                const value = Math.round(Number(lag.value) || 0);
+                patchActivity(activity, {
+                    predecessors: links.map((link) => (link.id === other.id ? { id: link.id, lag: value } : link))
+                });
             });
             chipEl.append(lag);
         }
@@ -1982,10 +2044,265 @@ function renderScheduleRow(activity, plan, from, span) {
         none.textContent = '— (es la unica actividad)';
         box.append(none);
     }
+    row.append(box);
+
+    if (!open) return row;
+
+    const tramos = document.createElement('ul');
+    tramos.className = 'tramo-list';
+    const own = tasksOf(activity.id, state.tasks)
+        .slice()
+        .sort((a, b) => {
+            const ea = schedule.tasks.get(a.id);
+            const eb = schedule.tasks.get(b.id);
+            if (!ea || !eb) return 0;
+            return ea.start < eb.start ? -1 : (ea.start > eb.start ? 1 : 0);
+        });
+    for (const task of own) tramos.append(renderProgramTask(task, activity, schedule, span));
+    if (!own.length) {
+        const empty = document.createElement('li');
+        empty.className = 'empty';
+        empty.textContent = 'Sin tramos todavia. Agregalos desde la pestaña Tareas.';
+        tramos.append(empty);
+    }
+    row.append(tramos);
+    return row;
+}
+
+/** Una fila de tramo: fechas propias, cantidad, frente y antecesores. */
+function renderProgramTask(task, activity, schedule, span) {
+    const entry = schedule.tasks.get(task.id);
+    const row = document.createElement('li');
+    row.className = 'tramo-row' + (entry && entry.critical ? ' critical' : '');
+
+    const top = document.createElement('div');
+    top.className = 'tramo-top';
+    const title = document.createElement('strong');
+    title.textContent = task.title || '(sin titulo)';
+    const when = document.createElement('span');
+    when.className = 'tramo-when';
+    when.textContent = entry && entry.start ? `${shortDate(entry.start)} → ${shortDate(entry.end)}` : 'sin fechar';
+    when.title = entry && entry.start ? `${formatDate(entry.start)} a ${formatDate(entry.end)}` : '';
+    top.append(title, when);
+    row.append(top);
+
+    const progress = taskProgress(task);
+    if (entry) {
+        row.append(ganttBar(entry, schedule, span, progress, entry.critical));
+
+        const meta = document.createElement('div');
+        meta.className = 'tramo-meta';
+        meta.append(tag(`${entry.duration} dia(s)${entry.manual ? ' fijos' : ''}`));
+        if (entry.amount && entry.amount.value > 0) {
+            meta.append(tag(`${formatNumber(entry.amount.value)} ${entry.amount.label}`));
+        }
+        if (entry.assumed) meta.append(tag('sin rendimiento', true));
+        if (entry.crews > 1) meta.append(tag(`frente ${entry.crew}`));
+        if (progress > 0) meta.append(tag(`${progress}% ejecutado`));
+        if (entry.broken) meta.append(tag('en circulo', true));
+        else if (entry.critical) {
+            const flag = document.createElement('span');
+            flag.className = 'schedule-flag';
+            flag.textContent = 'CRITICA';
+            meta.append(flag);
+        } else meta.append(tag(`holgura ${entry.float}`));
+        row.append(meta);
+    }
+
+    row.append(renderTramoLinks(task, activity, entry));
+    return row;
+}
+
+/**
+ * Antecesores de un tramo. Por defecto salen solos de la geometria: los tramos
+ * de la actividad previa que pisan los mismos elementos del plano. El boton
+ * ✎ congela esa lista y deja editarla cuando la obra no sigue al dibujo.
+ */
+function renderTramoLinks(task, activity, entry) {
+    const box = document.createElement('div');
+    box.className = 'tramo-links';
+    const manual = task.linksAuto === false;
+    const links = entry ? entry.links : taskLinks(task, state.activities, state.tasks);
+
+    const label = document.createElement('span');
+    label.textContent = manual ? 'Despues de (a mano):' : 'Despues de:';
+    box.append(label);
+
+    if (!links.length) {
+        const none = document.createElement('span');
+        none.className = 'tramo-none';
+        // Sin actividad antecesora es normal que no espere a nadie; con ella,
+        // significa que no encontro su tramo vecino y hay que revisarlo.
+        const primera = !activityLinks(activity).length;
+        none.textContent = manual ? 'nada, parte libre'
+            : (primera ? 'nada, es la primera actividad' : 'nada en su ubicacion');
+        box.append(none);
+    }
+
+    for (const link of links) {
+        const before = taskById(link.id);
+        const chipEl = document.createElement('span');
+        chipEl.className = 'schedule-link on';
+        const name = document.createElement('span');
+        name.textContent = before ? before.title : '(tramo borrado)';
+        chipEl.append(name);
+        if (link.lag) {
+            const lagTag = document.createElement('span');
+            lagTag.className = 'tramo-lag';
+            lagTag.textContent = link.lag > 0 ? `+${link.lag}` : String(link.lag);
+            chipEl.append(lagTag);
+        }
+        if (manual) {
+            const drop = document.createElement('button');
+            drop.type = 'button';
+            drop.className = 'tramo-drop';
+            drop.textContent = '✕';
+            drop.title = 'Quitar este antecesor';
+            drop.addEventListener('click', () => patchTask(task, {
+                predecessors: links.filter((l) => l.id !== link.id).map((l) => ({ id: l.id, lag: l.lag }))
+            }));
+            chipEl.append(drop);
+        }
+        box.append(chipEl);
+    }
+
+    if (!manual) {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'ghost small';
+        edit.textContent = '✎ A mano';
+        edit.title = 'Fijar los antecesores de este tramo';
+        edit.addEventListener('click', () => patchTask(task, {
+            linksAuto: false,
+            predecessors: links.map((l) => ({ id: l.id, lag: l.lag }))
+        }));
+        box.append(edit);
+        return box;
+    }
+
+    // En modo manual: un selector con todos los demas tramos, agrupados.
+    const picker = document.createElement('select');
+    picker.className = 'tramo-picker';
+    picker.append(new Option('+ Agregar antecesor…', ''));
+    const taken = new Set(links.map((l) => l.id));
+    for (const other of state.activities) {
+        const own = tasksOf(other.id, state.tasks).filter((t) => t.id !== task.id && !taken.has(t.id));
+        if (!own.length) continue;
+        const group = document.createElement('optgroup');
+        group.label = other.name;
+        for (const candidate of own) group.append(new Option(candidate.title || '(sin titulo)', candidate.id));
+        picker.append(group);
+    }
+    picker.addEventListener('change', () => {
+        if (!picker.value) return;
+        patchTask(task, {
+            predecessors: [...links.map((l) => ({ id: l.id, lag: l.lag })), { id: picker.value, lag: 0 }]
+        });
+    });
+    box.append(picker);
+
+    const auto = document.createElement('button');
+    auto.type = 'button';
+    auto.className = 'ghost small';
+    auto.textContent = '↺ Automatico';
+    auto.title = 'Volver a deducirlos del plano';
+    auto.addEventListener('click', () => patchTask(task, { linksAuto: true, predecessors: [] }));
+    box.append(auto);
+    return box;
+}
+
+/* ------------------------------ rendimientos ------------------------------ */
+
+function renderRates(schedule) {
+    const list = $('#rate-list');
+    if (!list) return;
+    list.innerHTML = '';
+    if (!state.activities.length) {
+        list.innerHTML = '<li class="empty">Todavia no hay actividades. Crealas en la pestaña Tareas.</li>';
+        return;
+    }
+    for (const activity of state.activities) list.append(renderRateRow(activity, schedule));
+}
+
+function renderRateRow(activity, schedule) {
+    const rate = rateOf(activity);
+    const unit = rateUnitOf(rate.unit);
+    const entry = schedule.activities.get(activity.id) || {};
+
+    const row = document.createElement('li');
+    row.className = 'rate-row';
+    row.innerHTML = `
+        <div class="schedule-top">
+            <span class="activity-dot"></span>
+            <strong></strong>
+        </div>
+        <div class="rate-grid">
+            <label>Se mide en
+                <select class="rate-unit"></select>
+            </label>
+            <label>Rendimiento
+                <span class="rate-input">
+                    <input type="number" class="rate-value" min="0" step="any" placeholder="0">
+                    <em></em>
+                </span>
+            </label>
+            <label>Frentes
+                <input type="number" class="rate-crews" min="1" step="1">
+            </label>
+        </div>
+        <small class="rate-result muted"></small>`;
+
+    row.querySelector('.activity-dot').style.background = activity.color;
+    row.querySelector('strong').textContent = activity.name;
+
+    const unitSelect = row.querySelector('.rate-unit');
+    for (const option of RATE_UNITS) unitSelect.append(new Option(option.label, option.id));
+    unitSelect.value = rate.unit;
+    unitSelect.addEventListener('change', () => {
+        patchActivity(activity, { rate: { unit: unitSelect.value, value: rate.value } });
+    });
+
+    const value = row.querySelector('.rate-value');
+    value.value = rate.value > 0 ? String(rate.value) : '';
+    row.querySelector('.rate-input em').textContent = `${unit.unit}/dia`;
+    value.addEventListener('change', () => {
+        const next = Number(value.value);
+        patchActivity(activity, {
+            rate: { unit: rate.unit, value: Number.isFinite(next) && next > 0 ? next : 0 }
+        });
+    });
+
+    const crews = row.querySelector('.rate-crews');
+    crews.value = String(entry.crews || crewsOf(activity));
+    crews.addEventListener('change', () => {
+        const next = Math.max(1, Math.round(Number(crews.value) || 1));
+        patchActivity(activity, { crews: next });
+    });
+
+    const result = row.querySelector('.rate-result');
+    if (entry.empty) {
+        result.textContent = `${unit.what}: ${unit.hint} Todavia no hay tramos que medir.`;
+    } else if (rate.value > 0) {
+        result.textContent = `${formatNumber(entry.amount)} ${unit.unit} en ${entry.tasks} tramo(s)`
+            + ` · ${entry.days} dias trabajados`
+            + (entry.crews > 1 ? ` con ${entry.crews} frentes` : '');
+    } else {
+        result.textContent = 'Sin rendimiento: cada tramo se cuenta como un dia. '
+            + `${unit.what}: ${unit.hint}`;
+    }
     return row;
 }
 
 function wireSchedule() {
+    for (const tab of $$('.sub-tab')) {
+        tab.addEventListener('click', () => {
+            for (const other of $$('.sub-tab')) other.classList.toggle('active', other === tab);
+            for (const panel of $$('.sub-panel')) {
+                panel.classList.toggle('active', panel.dataset.subpanel === tab.dataset.sub);
+            }
+            renderSchedule();
+        });
+    }
     $('#schedule-start').addEventListener('change', async (e) => {
         if (!state.project) return;
         state.project.scheduleStart = e.target.value || '';
@@ -2173,15 +2490,13 @@ async function saveAdvancedTask(task, message, { closePanel = false } = {}) {
     // Aviso de secuencia: se esta ejecutando algo cuya actividad previa no
     // termina. No se impide nada; en terreno a veces se adelanta a proposito.
     let notice = '';
-    const activity = state.activities.find((a) => a.id === task.activityId);
-    if (activity) {
-        const pending = unfinishedPredecessors(activity, state.activities, (id) =>
-            activityProgress(id, state.tasks, state.shapesById, state.unitScale).pct);
-        if (pending.length) {
-            notice = ' Ojo: ' + pending
-                .map((p) => `${p.activity.name} va en ${Math.round(p.pct)}%`).join(', ') + '.';
-        }
+    const pending = unfinishedPredecessors(task, state.activities, state.tasks,
+        (before) => taskProgress(before));
+    if (pending.length) {
+        notice = ' Ojo: ' + pending
+            .map((p) => `${p.task.title} va en ${Math.round(p.pct)}%`).join(', ') + '.';
     }
+    renderSchedule();
     toast(`${message} ${task.title || 'Actividad'}: ${task.progress}%.${notice}`);
 }
 
@@ -2873,6 +3188,9 @@ function openTaskModal(task, isNew = false) {
     renderTaskActivitySelect(task.activityId);
     $('#task-start').value = task.start || '';
     $('#task-due').value = task.due || '';
+    $('#task-duration').value = task.duration > 0 ? String(task.duration) : '';
+    $('#task-ternas').value = String(ternasOf(task));
+    renderTernasField();
     $('#task-description').value = task.description || '';
     $('#btn-delete-task').hidden = isNew;
     if (!Array.isArray(state.draft.resources)) state.draft.resources = [];
@@ -2890,6 +3208,36 @@ function closeTaskModal() {
 }
 
 /** Lista de actividades a las que puede pertenecer la tarea. */
+/**
+ * Las ternas solo pesan cuando la actividad se mide en metros de conductor:
+ * el campo aparece solo entonces, con la cuenta a la vista.
+ */
+function renderTernasField() {
+    const field = $('#task-ternas-field');
+    if (!field) return;
+    const activity = state.activities.find((a) => a.id === $('#task-activity').value);
+    const unit = activity ? rateOf(activity).unit : '';
+    field.hidden = unit !== 'ml_fase';
+    if (field.hidden) return;
+    const ternas = Math.max(1, Math.round(Number($('#task-ternas').value) || 1));
+    const meters = measureOfTask(state.draft) * ternas * 3;
+    $('#task-ternas-hint').textContent = meters > 0
+        ? `${ternas} terna(s) x 3 fases = ${formatNumber(meters)} m de conductor.`
+        : 'Cada terna son 3 conductores (R, S, T).';
+}
+
+/** Metros lineales de los tramos vinculados a una tarea. */
+function measureOfTask(task) {
+    if (!task) return 0;
+    let total = 0;
+    for (const ref of task.elements || []) {
+        const shape = state.shapesById.get(ref.id);
+        const m = shape ? measure(shape) : null;
+        if (m && m.length) total += m.length * state.unitScale;
+    }
+    return total;
+}
+
 function renderTaskActivitySelect(current) {
     const select = $('#task-activity');
     select.innerHTML = '';
@@ -3163,6 +3511,9 @@ function numberInput(value, placeholder, onChange) {
 }
 
 function wireTaskForm() {
+    $('#task-activity').addEventListener('change', renderTernasField);
+    $('#task-ternas').addEventListener('input', renderTernasField);
+
     // Barra y numero de avance van sincronizados.
     $('#task-progress-range').addEventListener('input', (e) => {
         $('#task-progress').value = e.target.value;
@@ -3188,6 +3539,10 @@ function wireTaskForm() {
         draft.activityId = $('#task-activity').value || null;
         draft.start = $('#task-start').value;
         draft.due = $('#task-due').value;
+        const fixed = Number($('#task-duration').value);
+        draft.duration = Number.isFinite(fixed) && fixed > 0 ? Math.round(fixed) : null;
+        const ternas = Number($('#task-ternas').value);
+        draft.ternas = Number.isFinite(ternas) && ternas > 0 ? Math.round(ternas) : 1;
         draft.description = $('#task-description').value.trim();
         const progress = Number($('#task-progress').value);
         draft.progress = Number.isFinite(progress) ? Math.max(0, Math.min(100, Math.round(progress))) : 0;
@@ -3210,6 +3565,7 @@ function wireTaskForm() {
         applyTaskHighlight(saved);
         refreshActivityHighlight();
         renderTasks();
+        renderSchedule();
         renderResources();
         renderElementPanel();
         toast(isNew ? 'Tarea creada.' : 'Tarea actualizada.');
@@ -3222,6 +3578,7 @@ function wireTaskForm() {
         state.tasks = state.tasks.filter((t) => t.id !== draft.id);
         closeTaskModal();
         renderTasks();
+        renderSchedule();
         renderResources();
         renderElementPanel();
         toast('Tarea eliminada.');
