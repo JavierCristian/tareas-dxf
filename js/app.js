@@ -18,7 +18,8 @@ import {
     STATUSES, PRIORITIES, statusOf, priorityOf, createTask, elementRef, taskAnchor,
     isOverdue, filterTasks, summarize, tasksToCsv, projectToJson, download,
     taskProgress, taskQuantity, progressSummary, tracksElements, progressFromElements,
-    performance, elementsToCsv
+    performance, elementsToCsv, refSpans, refDoneLength, refDoneLengthAt, isRefDone,
+    normalizeSpans, addSpan, spansLength, refLastDate
 } from './tasks.js';
 import {
     RESOURCE_TYPES, ROLE_HINTS, CODE_HINTS, typeOf, createResource, normalizeResource,
@@ -37,12 +38,12 @@ import {
 } from './timeline.js';
 import {
     applyEdits, makeEdit, removeEdit, editOfShape, canSplit, splitOpen, splitClosed,
-    equalCuts, projectOnPath, pathLength, chain, joinTolerance, MIN_PART_RATIO
+    equalCuts, projectOnPath, pathLength, sliceRange, chain, joinTolerance, MIN_PART_RATIO
 } from './edits.js';
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '8';
+export const APP_VERSION = '9';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -1373,19 +1374,55 @@ const DONE_COLOR = '#22c55e';
 const PENDING_COLOR = '#ef4444';
 
 /**
+ * Trozos de linea a pintar para una tarea: verde lo ejecutado y rojo lo
+ * pendiente. Un mismo elemento puede llevar solo unos metros hechos, y cada
+ * actividad tiene los suyos, asi que se recorta la polilinea segun haga falta.
+ */
+function overlaysForTask(task, date = null) {
+    const out = [];
+    for (const ref of task.elements || []) {
+        const shape = state.shapesById.get(ref.id);
+        if (!shape) continue;
+        const m = measure(shape);
+
+        // Areas y puntos no tienen metros: van enteros.
+        if (!m || (shape.closed && m.area)) {
+            const done = ref.done && (!date || (ref.doneAt && ref.doneAt <= date));
+            out.push({ pts: shape.pts, color: done ? DONE_COLOR : PENDING_COLOR });
+            continue;
+        }
+
+        const total = m.length;
+        let spans = refSpans(ref, total);
+        if (date) spans = normalizeSpans(spans.filter((s) => !s.date || s.date <= date), total);
+        if (!spans.length) {
+            out.push({ pts: shape.pts, color: PENDING_COLOR });
+            continue;
+        }
+        let cursor = 0;
+        for (const span of spans) {
+            if (span.from > cursor + 1e-9) {
+                out.push({ pts: sliceRange(shape.pts, cursor, span.from), color: PENDING_COLOR });
+            }
+            out.push({ pts: sliceRange(shape.pts, span.from, span.to), color: DONE_COLOR });
+            cursor = span.to;
+        }
+        if (cursor < total - 1e-9) {
+            out.push({ pts: sliceRange(shape.pts, cursor, total), color: PENDING_COLOR });
+        }
+    }
+    return out;
+}
+
+/**
  * Resalta los tramos de una tarea: verde los ejecutados, el color del estado
  * los pendientes. Con la linea de tiempo abierta manda la fecha del cursor.
  */
 function applyTaskHighlight(task) {
     if (timelineActive() || state.activeActivity) return;
     if (!task || !task.elements.length) return clearTaskHighlight();
-    const map = new Map();
-    for (const ref of task.elements) {
-        if (!state.shapesById.has(ref.id)) continue;
-        map.set(ref.id, ref.done ? DONE_COLOR : PENDING_COLOR);
-    }
     // El resto del plano se apaga para que se lea solo esta actividad.
-    viewer.setTaskHighlight(map, true);
+    viewer.setTaskHighlight(overlaysForTask(task), true);
 }
 
 function clearTaskHighlight() {
@@ -1459,10 +1496,19 @@ function renderElementPanel() {
 
             // Marcar el tramo estando frente a el, sin abrir la tarea.
             const ref = task.elements.find((e) => e.id === id);
+            const totalLength = shape.closed ? 0 : pathLength(shape.pts);
+            const executed = totalLength ? refDoneLength(ref, totalLength) : 0;
+            const complete = totalLength ? isRefDone(ref, totalLength) : !!ref.done;
+            const partial = executed > 0 && !complete;
+
             const mark = document.createElement('button');
-            mark.className = 'mark-done' + (ref.done ? ' on' : '');
-            mark.textContent = ref.done ? '✓ Hecho' : 'Marcar hecho';
-            mark.title = ref.done && ref.doneAt ? `Ejecutado el ${ref.doneAt}` : 'Marcar este tramo como ejecutado';
+            mark.className = 'mark-done' + (complete ? ' on' : partial ? ' partial' : '');
+            mark.textContent = complete
+                ? '✓ Hecho'
+                : partial ? `${formatNumber(executed)} hechos` : 'Marcar hecho';
+            mark.title = complete
+                ? `Ejecutado el ${refLastDate(ref) || ''}`
+                : partial ? 'Toca para completar el tramo' : 'Marcar este tramo como ejecutado';
             mark.addEventListener('click', (e) => {
                 e.stopPropagation();
                 toggleElementDone(task, id);
@@ -1487,20 +1533,22 @@ function renderElementPanel() {
 async function toggleElementDone(task, elementId) {
     const ref = task.elements.find((e) => e.id === elementId);
     if (!ref) return;
-    ref.done = !ref.done;
-    ref.doneAt = ref.done ? (ref.doneAt || todayDate()) : null;
-    task.progress = Math.round(progressFromElements(task, state.shapesById));
-    if (task.progress === 100 && task.status !== 'completada') task.status = 'completada';
-    else if (task.progress < 100 && task.status === 'completada') task.status = 'en_curso';
-    task.updatedAt = Date.now();
+    const shape = state.shapesById.get(elementId);
+    const total = shape ? pathLength(shape.pts) : 0;
+    const wasDone = total > 0 ? isRefDone(ref, total) : !!ref.done;
 
-    await saveTask(task);
-    applyTaskHighlight(task);
-    refreshActivityHighlight();
-    renderTasks();
-    renderElementPanel();
-    toast(ref.done ? `Tramo marcado como hecho (${task.progress}% de la tarea).` : 'Tramo marcado como pendiente.');
+    if (wasDone) {
+        ref.done = false;
+        ref.doneAt = null;
+        ref.spans = [];
+    } else {
+        ref.done = true;
+        ref.doneAt = ref.doneAt || todayDate();
+        if (total > 0) ref.spans = normalizeSpans([{ from: 0, to: total, date: ref.doneAt }], total);
+    }
+    await saveAdvancedTask(task, wasDone ? 'Tramo pendiente.' : 'Tramo completo.');
 }
+
 
 /** Botonera de division / union para la seleccion actual. */
 function geometryActions() {
@@ -1588,15 +1636,10 @@ function selectActivity(activityId) {
         renderTasks();
         return;
     }
-    const map = new Map();
-    for (const task of tasksOf(activityId, state.tasks)) {
-        for (const ref of task.elements) {
-            if (!state.shapesById.has(ref.id)) continue;
-            map.set(ref.id, ref.done ? DONE_COLOR : PENDING_COLOR);
-        }
-    }
-    if (!map.size) toast('Esta actividad todavia no tiene tramos en el plano.');
-    viewer.setTaskHighlight(map, true);
+    const overlays = [];
+    for (const task of tasksOf(activityId, state.tasks)) overlays.push(...overlaysForTask(task));
+    if (!overlays.length) toast('Esta actividad todavia no tiene tramos en el plano.');
+    viewer.setTaskHighlight(overlays, true);
     renderTasks();
 }
 
@@ -1790,20 +1833,27 @@ function renderAdvancePreview() {
     const meters = Number($('#advance-meters').value);
     const box = $('#advance-preview');
 
+    // Lo ya ejecutado por esta actividad sobre este mismo elemento.
+    const task = state.tasks.find((t) => t.id === $('#advance-task').value);
+    const ref = task ? task.elements.find((e) => e.id === advance.shape.id) : null;
+    const already = ref ? refDoneLength(ref, total) : 0;
+    const pending = Math.max(0, total - already);
+
     if (!Number.isFinite(meters) || meters <= 0) {
-        box.innerHTML = `Longitud del tramo: ${formatNumber(total)}${units}.`;
+        box.innerHTML = already > 0
+            ? `Este tramo mide ${formatNumber(total)}${units}. Esta actividad lleva `
+              + `<b>${formatNumber(already)}${units}</b> y quedan <i>${formatNumber(pending)}${units}</i>.`
+            : `Este tramo mide ${formatNumber(total)}${units} y no tiene avance en esta actividad.`;
         return;
     }
-    // Los metros van en metros reales; el plano puede estar en otras unidades.
-    const along = meters / state.unitScale;
-    if (along >= total * (1 - MIN_PART_RATIO)) {
-        box.innerHTML = `El tramo completo (<b>${formatNumber(total)}${units}</b>) queda ejecutado. No se divide.`;
+    const along = Math.min(pending, meters / state.unitScale);
+    const after = already + along;
+    if (after >= total - 1e-9) {
+        box.innerHTML = `El tramo queda <b>completo</b> (${formatNumber(total)}${units}).`;
         return;
     }
-    const rest = total - along;
-    box.innerHTML = `Se corta a los ${formatNumber(along)}${units}: `
-        + `<b>${formatNumber(along)}${units} ejecutados</b> y `
-        + `<i>${formatNumber(rest)}${units} pendientes</i>.`;
+    box.innerHTML = `Quedaria <b>${formatNumber(after)}${units} ejecutados</b> y `
+        + `<i>${formatNumber(total - after)}${units} pendientes</i> en esta actividad.`;
 }
 
 async function submitAdvance() {
@@ -1814,53 +1864,78 @@ async function submitAdvance() {
     if (!Number.isFinite(meters) || meters <= 0) return toast('Escribe cuantos metros se ejecutaron.');
 
     const date = $('#advance-date').value || todayDate();
-    const taskId = $('#advance-task').value;
+    const task = state.tasks.find((t) => t.id === $('#advance-task').value);
+    if (!task) return;
+    const ref = task.elements.find((e) => e.id === shape.id);
+    if (!ref) return toast('El tramo no pertenece a esa actividad.');
+
     const total = pathLength(shape.pts);
-    const along = meters / state.unitScale;
+    const along = Math.min(total, meters / state.unitScale);
     closeAdvanceModal();
 
-    // Avance que cubre el tramo entero: no hay nada que dividir.
-    if (along >= total * (1 - MIN_PART_RATIO)) {
-        return markRefDone(taskId, shape.id, date);
-    }
-    if (along <= total * MIN_PART_RATIO) {
-        return toast('El metraje es demasiado pequeno para este tramo.');
+    // El avance NO divide la polilinea: se anota sobre el mismo elemento, para
+    // que otra actividad pueda llevar los suyos sobre el mismo trazado. Se
+    // acumula desde el extremo elegido, continuando lo que ya estaba hecho.
+    const existing = refSpans(ref, total);
+    let from;
+    let to;
+    if (fromStart) {
+        from = continueFrom(existing, total, true);
+        to = Math.min(total, from + along);
+    } else {
+        to = continueFrom(existing, total, false);
+        from = Math.max(0, to - along);
     }
 
-    const cut = fromStart ? along : total - along;
-    const parts = splitOpen(shape, [cut]);
-    if (parts.length < 2) return toast('No se pudo dividir el tramo.');
-
-    const edit = makeEdit('division', [shape], parts);
-    // La parte ejecutada es la del extremo desde el que se midio.
-    const executedId = (fromStart ? edit.parts[0] : edit.parts[edit.parts.length - 1]).id;
-    await commitEdit(edit, `Avance de ${formatNumber(along)} registrado.`);
-    await markRefDone(taskId, executedId, date);
+    ref.spans = addSpan(ref, from, to, date, total);
+    ref.done = isRefDone(ref, total);
+    ref.doneAt = ref.done ? (refLastDate(ref) || date) : null;
+    await saveAdvancedTask(task, `Avance de ${formatNumber(along)} registrado.`, { closePanel: true });
 }
 
-/** Marca un tramo como ejecutado dentro de una actividad y guarda. */
+/**
+ * Desde donde continua el avance: el final de lo ya ejecutado cuando se mide
+ * desde el inicio, o su comienzo cuando se mide desde el otro extremo.
+ */
+function continueFrom(spans, total, fromStart) {
+    if (!spans.length) return fromStart ? 0 : total;
+    if (fromStart) return spans[0].from <= 1e-9 ? spans[0].to : 0;
+    const last = spans[spans.length - 1];
+    return last.to >= total - 1e-9 ? last.from : total;
+}
+
+/** Marca (o completa) el tramo entero dentro de una actividad. */
 async function markRefDone(taskId, shapeId, date) {
     const task = state.tasks.find((t) => t.id === taskId);
     if (!task) return;
     const ref = task.elements.find((e) => e.id === shapeId);
     if (!ref) return toast('El tramo quedo fuera de la actividad.');
+    const shape = state.shapesById.get(shapeId);
+    const total = shape ? pathLength(shape.pts) : 0;
 
     ref.done = true;
     ref.doneAt = date;
+    if (total > 0) ref.spans = normalizeSpans([{ from: 0, to: total, date }], total);
+    await saveAdvancedTask(task, 'Tramo completo.');
+}
+
+/** Guarda tras un avance y refresca plano, listas y avisos de secuencia. */
+async function saveAdvancedTask(task, message, { closePanel = false } = {}) {
     task.progress = Math.round(progressFromElements(task, state.shapesById));
-    if (task.progress === 100 && task.status !== 'completada') task.status = 'completada';
+    if (task.progress >= 100 && task.status !== 'completada') task.status = 'completada';
     else if (task.progress < 100 && task.status === 'completada') task.status = 'en_curso';
     task.updatedAt = Date.now();
 
     await saveTask(task);
-    setSelection([]);
+    // La seleccion se mantiene: el elemento sigue existiendo, ya no se divide.
     applyTaskHighlight(task);
     refreshActivityHighlight();
     renderTasks();
     renderElementPanel();
-    // En pantalla chica el panel tapa el plano: se cierra para ver el resultado.
-    if (window.matchMedia('(max-width: 900px)').matches) togglePanel(false);
-    toast(`${task.title || 'Actividad'}: ${task.progress}% ejecutado.`);
+    renderSelectionCard();
+    // Tras registrar desde el dialogo conviene ver el plano en pantalla chica.
+    if (closePanel && window.matchMedia('(max-width: 900px)').matches) togglePanel(false);
+    toast(`${message} ${task.title || 'Actividad'}: ${task.progress}%.`);
 }
 
 function wireAdvance() {
@@ -1870,6 +1945,7 @@ function wireAdvance() {
         renderAdvanceOrigin();
     });
     $('#advance-meters').addEventListener('input', renderAdvancePreview);
+    $('#advance-task').addEventListener('change', renderAdvancePreview);
     $('#advance-form').addEventListener('submit', (e) => {
         e.preventDefault();
         submitAdvance();
@@ -1965,15 +2041,9 @@ function renderTimeline() {
     $('#timeline-date').textContent = formatDate(date) + (date === todayDate() ? ' · hoy' : '');
 
     // Todos los tramos de todas las tareas, segun estaban a esa fecha.
-    const highlight = new Map();
-    for (const task of state.tasks) {
-        const taskState = state_.perTask.get(task.id);
-        for (const ref of task.elements) {
-            if (!state.shapesById.has(ref.id)) continue;
-            highlight.set(ref.id, taskState.doneIds.has(ref.id) ? DONE_COLOR : PENDING_COLOR);
-        }
-    }
-    viewer.setTaskHighlight(highlight, true);
+    const overlays = [];
+    for (const task of state.tasks) overlays.push(...overlaysForTask(task, date));
+    viewer.setTaskHighlight(overlays, true);
     renderMarkers(filterTasks(state.tasks, { ...state.filters, resourceNames: new Map() }));
 
     const units = state.project.units === 'sin unidad' ? '' : ` ${state.project.units}`;
@@ -2721,15 +2791,25 @@ function renderLinkedElements() {
         item.className = 'linked-item element-row';
         if (element.done) item.classList.add('done');
 
+        const shapeOf = state.shapesById.get(element.id);
+        const totalOf = shapeOf && !shapeOf.closed ? pathLength(shapeOf.pts) : 0;
+        const executedOf = totalOf ? refDoneLength(element, totalOf) : 0;
+        const completeOf = totalOf ? isRefDone(element, totalOf) : !!element.done;
+
         const check = document.createElement('label');
         check.className = 'element-check';
-        check.title = 'Marcar el tramo como ejecutado';
+        check.title = 'Marcar el tramo completo como ejecutado';
         const input = document.createElement('input');
         input.type = 'checkbox';
-        input.checked = !!element.done;
+        input.checked = completeOf;
+        input.indeterminate = executedOf > 0 && !completeOf;
         input.addEventListener('change', () => {
+            const date = element.doneAt || todayDate();
             element.done = input.checked;
-            element.doneAt = input.checked ? (element.doneAt || todayDate()) : null;
+            element.doneAt = input.checked ? date : null;
+            element.spans = input.checked && totalOf
+                ? normalizeSpans([{ from: 0, to: totalOf, date }], totalOf)
+                : [];
             renderLinkedElements();
             renderTaskQuantity();
             applyTaskHighlight(state.draft);
@@ -2745,6 +2825,14 @@ function renderLinkedElements() {
         const size = m ? ` · ${formatNumber(m.length)}${units}` : '';
         title.textContent = `${KIND_LABELS[element.kind] || element.kind} · ${element.layer}${size}`;
         main.append(title);
+
+        // Avance parcial: cuantos metros de ese tramo lleva esta actividad.
+        if (executedOf > 0 && !completeOf) {
+            const partial = document.createElement('span');
+            partial.className = 'element-partial';
+            partial.textContent = `${formatNumber(executedOf)} de ${formatNumber(totalOf)}${units} ejecutados`;
+            main.append(partial);
+        }
 
         // Seccion: solo tiene sentido en tramos lineales.
         if (m && !m.area) {
@@ -2776,7 +2864,7 @@ function renderLinkedElements() {
         }
 
         // La fecha se puede corregir: el lunes se registra lo del viernes.
-        if (element.done) {
+        if (completeOf) {
             const when = document.createElement('label');
             when.className = 'element-date';
             const text = document.createElement('span');
