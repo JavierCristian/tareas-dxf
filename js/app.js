@@ -37,13 +37,16 @@ import {
     formatDate, todayISO as todayDate
 } from './timeline.js';
 import {
+    CALENDARS, calendarOf, computeSchedule, workdaysBetween, taskDates, unfinishedPredecessors
+} from './schedule.js';
+import {
     applyEdits, makeEdit, removeEdit, editOfShape, canSplit, splitOpen, splitClosed,
     equalCuts, projectOnPath, pathLength, sliceRange, chain, joinTolerance, MIN_PART_RATIO
 } from './edits.js';
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '9';
+export const APP_VERSION = '10';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -62,6 +65,7 @@ const state = {
     places: [],
     activities: [],
     activeActivity: null,   // actividad resaltada en el plano
+    schedule: null,         // ultimo programa calculado {plan, cycle, from, to}
     selection: [],          // ids de figuras
     multi: false,
     filters: { text: '', status: 'todas', layer: 'todas', resource: 'todas' },
@@ -94,6 +98,7 @@ function init() {
     fillSelect($('#task-priority'), PRIORITIES);
     fillSelect($('#filter-status'), STATUSES, 'todas', 'Todos los estados');
     fillSelect($('#resource-type'), RESOURCE_TYPES);
+    fillSelect($('#schedule-calendar'), CALENDARS);
 
     wireWelcome();
     wireTopbar();
@@ -105,6 +110,7 @@ function init() {
     wireTimeline();
     wireAdvance();
     wireActivities();
+    wireSchedule();
     wireSplitModal();
 
     refreshRecent();
@@ -1114,6 +1120,7 @@ function renderTasks() {
     const visibleIds = new Set(visible.map((task) => task.id));
     list.innerHTML = '';
     renderProgress();
+    renderSchedule();
 
     const stats = summarize(state.tasks);
     const summary = $('#task-summary');
@@ -1659,6 +1666,7 @@ function openActivityModal(activity, isNew = false) {
     state.activityDraft = { ...activity, isNew };
     $('#activity-modal-title').textContent = isNew ? 'Nueva actividad' : 'Editar actividad';
     $('#activity-name').value = activity.name || '';
+    $('#activity-duration').value = activity.duration > 0 ? String(activity.duration) : '';
     $('#btn-delete-activity').hidden = isNew;
     renderActivityColors();
     $('#activity-modal').classList.remove('hidden');
@@ -1728,6 +1736,8 @@ function wireActivities() {
         if (!draft) return;
         draft.name = $('#activity-name').value.trim();
         if (!draft.name) return;
+        const days = Number($('#activity-duration').value);
+        draft.duration = Number.isFinite(days) && days > 0 ? Math.round(days) : null;
 
         const isNew = draft.isNew;
         delete draft.isNew;
@@ -1753,6 +1763,16 @@ function wireActivities() {
 
         await deleteActivity(draft.id);
         state.activities = state.activities.filter((a) => a.id !== draft.id);
+        // Nadie puede quedar enlazado a una actividad que ya no existe.
+        const relinked = [];
+        for (const activity of state.activities) {
+            const links = (activity.predecessors || []).filter((p) => (typeof p === 'string' ? p : p.id) !== draft.id);
+            if (links.length !== (activity.predecessors || []).length) {
+                activity.predecessors = links;
+                relinked.push(activity);
+            }
+        }
+        if (relinked.length) await saveActivities(relinked);
         const touched = [];
         for (const task of own) {
             task.activityId = null;
@@ -1765,6 +1785,220 @@ function wireActivities() {
         closeActivityModal();
         renderTasks();
         toast('Actividad eliminada.');
+    });
+}
+
+/* ------------------------------------------------------------------ */
+/* Programa maestro: duraciones, antecesores y ruta critica            */
+/* ------------------------------------------------------------------ */
+
+function scheduleCalendarId() {
+    return (state.project && state.project.workdays) || 'todos';
+}
+
+/** Recalcula el programa completo con lo que hay guardado en el proyecto. */
+function schedulePlan() {
+    if (!state.project) return { plan: new Map(), cycle: [], from: todayDate(), to: todayDate() };
+    state.schedule = computeSchedule(state.activities, {
+        start: state.project.scheduleStart || '',
+        calendar: scheduleCalendarId()
+    });
+    return state.schedule;
+}
+
+function activityName(id) {
+    const activity = state.activities.find((a) => a.id === id);
+    return activity ? activity.name : '(actividad borrada)';
+}
+
+/** Antecesores de una actividad como {id, lag}, tolerando el formato antiguo. */
+function linksOf(activity) {
+    return (activity.predecessors || []).map((entry) =>
+        typeof entry === 'string' ? { id: entry, lag: 0 } : { id: entry.id, lag: Number(entry.lag) || 0 });
+}
+
+async function saveLinks(activity, links) {
+    activity.predecessors = links;
+    activity.updatedAt = Date.now();
+    await saveActivity(activity);
+    renderSchedule();
+    if (timelineActive()) renderTimeline();
+}
+
+/**
+ * Tareas con las fechas que les toca por programa. Las que tienen fecha propia
+ * la conservan; las demas heredan el inicio y termino de su actividad, para que
+ * el cursor y la curva comparen contra el plan real.
+ */
+function scheduledTasks() {
+    const { plan } = schedulePlan();
+    return state.tasks.map((task) => {
+        const dates = taskDates(task, plan);
+        const start = dates.start || '';
+        const due = dates.due || '';
+        if (start === (task.start || '') && due === (task.due || '')) return task;
+        return { ...task, start, due };
+    });
+}
+
+function renderSchedule() {
+    const list = $('#schedule-list');
+    const summary = $('#schedule-summary');
+    const warning = $('#schedule-warning');
+    if (!list || !state.project) return;
+
+    const { plan, cycle, from, to } = schedulePlan();
+    $('#schedule-start').value = state.project.scheduleStart || from;
+    $('#schedule-calendar').value = scheduleCalendarId();
+
+    warning.hidden = !cycle.length;
+    if (cycle.length) {
+        warning.textContent = 'Hay un enlace de antecesores en circulo, asi que estas actividades '
+            + `quedan sin fechar: ${cycle.map(activityName).join(', ')}. Quita alguno de esos enlaces.`;
+    }
+
+    summary.innerHTML = '';
+    list.innerHTML = '';
+    if (!state.activities.length) {
+        list.innerHTML = '<li class="empty">Crea las actividades en la pestaña Tareas '
+            + '(excavacion, tendido, tapado…) y aqui les pones duracion y antecesores.</li>';
+        return;
+    }
+
+    const days = workdaysBetween(from, to, calendarOf(scheduleCalendarId()));
+    summary.append(chip(`${state.activities.length} actividades`, null));
+    summary.append(chip(`${formatDate(from)} → ${formatDate(to)}`, '#2f81f7'));
+    summary.append(chip(`${days} dias trabajados`, null));
+
+    const critical = state.activities
+        .filter((activity) => (plan.get(activity.id) || {}).critical)
+        .sort((a, b) => (plan.get(a.id).start < plan.get(b.id).start ? -1 : 1));
+    if (critical.length) {
+        summary.append(chip(`Ruta critica: ${critical.map((a) => a.name).join(' → ')}`, '#ef4444'));
+    }
+
+    const span = Math.max(1, daysBetween(from, to) + 1);
+    for (const activity of state.activities) {
+        list.append(renderScheduleRow(activity, plan, from, span));
+    }
+}
+
+/** Una fila del programa: duracion, antecesores, fechas calculadas y barra. */
+function renderScheduleRow(activity, plan, from, span) {
+    const entry = plan.get(activity.id);
+    const row = document.createElement('li');
+    row.className = 'schedule-row' + (entry && entry.critical ? ' critical' : '');
+    row.dataset.activity = activity.id;
+    row.innerHTML = `
+        <div class="schedule-top">
+            <span class="activity-dot"></span>
+            <strong></strong>
+            <label class="schedule-days">
+                <input type="number" min="1" step="1" placeholder="1"> dias
+            </label>
+        </div>
+        <div class="schedule-gantt"><i><span></span></i></div>
+        <div class="schedule-dates"></div>
+        <div class="schedule-links"><span>Empieza despues de:</span></div>`;
+
+    row.querySelector('.activity-dot').style.background = activity.color;
+    row.querySelector('strong').textContent = activity.name;
+
+    const duration = row.querySelector('.schedule-days input');
+    duration.value = activity.duration > 0 ? String(activity.duration) : '';
+    duration.addEventListener('change', async () => {
+        const value = Number(duration.value);
+        activity.duration = Number.isFinite(value) && value > 0 ? Math.round(value) : null;
+        activity.updatedAt = Date.now();
+        await saveActivity(activity);
+        renderSchedule();
+        if (timelineActive()) renderTimeline();
+    });
+
+    // Barra: el tramo que ocupa en el programa, rellena con lo ejecutado.
+    const progress = activityProgress(activity.id, state.tasks, state.shapesById, state.unitScale);
+    const bar = row.querySelector('.schedule-gantt i');
+    if (entry) {
+        const left = (daysBetween(from, entry.start) / span) * 100;
+        const width = ((daysBetween(entry.start, entry.end) + 1) / span) * 100;
+        bar.style.left = `${Math.max(0, Math.min(99, left))}%`;
+        bar.style.width = `${Math.max(2, Math.min(100 - left, width))}%`;
+        if (entry.critical) bar.style.background = 'rgba(239, 68, 68, 0.4)';
+        bar.querySelector('span').style.width = `${Math.max(0, Math.min(100, progress.pct))}%`;
+    }
+
+    const dates = row.querySelector('.schedule-dates');
+    if (entry) {
+        const range = document.createElement('span');
+        range.innerHTML = `<b>${formatDate(entry.start)}</b> a <b>${formatDate(entry.end)}</b>`;
+        dates.append(range, tag(`${Math.round(progress.pct)}% ejecutado`));
+        if (entry.broken) dates.append(tag('sin fechar: antecesores en circulo', true));
+        else if (entry.critical) {
+            const flag = document.createElement('span');
+            flag.className = 'schedule-flag';
+            flag.textContent = 'CRITICA';
+            dates.append(flag);
+        } else dates.append(tag(`holgura ${entry.float} dia(s)`));
+    }
+
+    // Antecesores: una ficha por cada otra actividad, con su desfase en dias.
+    const links = linksOf(activity);
+    const box = row.querySelector('.schedule-links');
+    for (const other of state.activities) {
+        if (other.id === activity.id) continue;
+        const current = links.find((link) => link.id === other.id);
+        const chipEl = document.createElement('label');
+        chipEl.className = 'schedule-link' + (current ? ' on' : '');
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.checked = !!current;
+        const name = document.createElement('span');
+        name.textContent = other.name;
+        chipEl.append(check, name);
+
+        check.addEventListener('change', () => {
+            const next = links.filter((link) => link.id !== other.id);
+            if (check.checked) next.push({ id: other.id, lag: 0 });
+            saveLinks(activity, next);
+        });
+
+        if (current) {
+            const lag = document.createElement('input');
+            lag.type = 'number';
+            lag.step = '1';
+            lag.value = String(current.lag);
+            lag.title = 'Dias de desfase: positivo espera, negativo solapa';
+            lag.addEventListener('change', () => {
+                const value = Number(lag.value) || 0;
+                saveLinks(activity, links.map((link) =>
+                    (link.id === other.id ? { id: link.id, lag: Math.round(value) } : link)));
+            });
+            chipEl.append(lag);
+        }
+        box.append(chipEl);
+    }
+    if (state.activities.length < 2) {
+        const none = document.createElement('span');
+        none.textContent = '— (es la unica actividad)';
+        box.append(none);
+    }
+    return row;
+}
+
+function wireSchedule() {
+    $('#schedule-start').addEventListener('change', async (e) => {
+        if (!state.project) return;
+        state.project.scheduleStart = e.target.value || '';
+        await saveProject(state.project);
+        renderSchedule();
+        if (timelineActive()) renderTimeline();
+    });
+    $('#schedule-calendar').addEventListener('change', async (e) => {
+        if (!state.project) return;
+        state.project.workdays = e.target.value;
+        await saveProject(state.project);
+        renderSchedule();
+        if (timelineActive()) renderTimeline();
     });
 }
 
@@ -1935,7 +2169,20 @@ async function saveAdvancedTask(task, message, { closePanel = false } = {}) {
     renderSelectionCard();
     // Tras registrar desde el dialogo conviene ver el plano en pantalla chica.
     if (closePanel && window.matchMedia('(max-width: 900px)').matches) togglePanel(false);
-    toast(`${message} ${task.title || 'Actividad'}: ${task.progress}%.`);
+
+    // Aviso de secuencia: se esta ejecutando algo cuya actividad previa no
+    // termina. No se impide nada; en terreno a veces se adelanta a proposito.
+    let notice = '';
+    const activity = state.activities.find((a) => a.id === task.activityId);
+    if (activity) {
+        const pending = unfinishedPredecessors(activity, state.activities, (id) =>
+            activityProgress(id, state.tasks, state.shapesById, state.unitScale).pct);
+        if (pending.length) {
+            notice = ' Ojo: ' + pending
+                .map((p) => `${p.activity.name} va en ${Math.round(p.pct)}%`).join(', ') + '.';
+        }
+    }
+    toast(`${message} ${task.title || 'Actividad'}: ${task.progress}%.${notice}`);
 }
 
 function wireAdvance() {
@@ -1963,13 +2210,16 @@ function timelineActive() {
 }
 
 function openTimeline() {
-    const range = projectRange(state.tasks, state.places);
+    // Las tareas entran con las fechas del programa: asi la curva planificada
+    // sale del programa maestro aunque el tramo no tenga fechas propias.
+    const tasks = scheduledTasks();
+    const range = projectRange(tasks, state.places);
     if (!range) {
-        return toast('Todavia no hay fechas: marca tramos o pon inicio y termino a una tarea.');
+        return toast('Todavia no hay fechas: marca tramos, dale duracion a las actividades o pon inicio y termino a una tarea.');
     }
     const today = todayDate();
     const date = today < range.from ? range.from : (today > range.to ? range.to : today);
-    state.timeline = { ...range, date, playing: false, timer: null };
+    state.timeline = { ...range, date, playing: false, timer: null, tasks };
 
     const slider = $('#timeline-range');
     slider.min = '0';
@@ -2036,7 +2286,8 @@ function renderTimeline() {
     const timeline = state.timeline;
     if (!timeline) return;
     const date = timeline.date;
-    const state_ = projectStateAt(state.tasks, state.shapesById, date, state.unitScale);
+    timeline.tasks = scheduledTasks();
+    const state_ = projectStateAt(timeline.tasks, state.shapesById, date, state.unitScale);
 
     $('#timeline-date').textContent = formatDate(date) + (date === todayDate() ? ' · hoy' : '');
 
@@ -2083,7 +2334,7 @@ function drawCurve() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
-    const points = progressCurve(state.tasks, state.shapesById, timeline, state.unitScale);
+    const points = progressCurve(timeline.tasks || state.tasks, state.shapesById, timeline, state.unitScale);
     if (points.length < 2) return;
 
     const pad = 4;

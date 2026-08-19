@@ -31,11 +31,31 @@ export function nextWorkday(iso, calendar) {
     return date;
 }
 
+/** Ultimo dia laboral hasta una fecha (incluida). */
+export function prevWorkday(iso, calendar) {
+    let date = iso;
+    for (let guard = 0; guard < 14; guard++) {
+        if (calendar.works(isoToDate(date).getDay())) return date;
+        date = addDays(date, -1);
+    }
+    return date;
+}
+
 /**
  * Suma dias laborales. Con n = 0 devuelve el mismo dia; con n = 1, el
- * siguiente dia laboral.
+ * siguiente dia laboral. Con n negativo retrocede, que es lo que necesita la
+ * vuelta del calculo (holguras y ruta critica).
  */
 export function addWorkdays(iso, n, calendar) {
+    if (n < 0) {
+        let date = prevWorkday(iso, calendar);
+        let left = -n;
+        while (left > 0) {
+            date = prevWorkday(addDays(date, -1), calendar);
+            left--;
+        }
+        return date;
+    }
     let date = nextWorkday(iso, calendar);
     let left = n;
     while (left > 0) {
@@ -199,18 +219,6 @@ export function computeSchedule(activities, { start, calendar = 'todos' } = {}) 
     }
 
     return { plan, cycle, from: projectStart, to: projectEnd };
-}
-
-/** Retrocede dias laborales (addWorkdays no admite negativos). */
-function addWorkdaysBack(iso, n, calendar) {
-    let date = iso;
-    let left = n;
-    while (left > 0) {
-        date = addDays(date, -1);
-        while (!calendar.works(isoToDate(date).getDay())) date = addDays(date, -1);
-        left--;
-    }
-    return date;
 }
 
 /**

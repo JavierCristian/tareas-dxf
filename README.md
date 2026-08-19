@@ -26,7 +26,9 @@ sin servidor ni base de datos remota.
    del estado, y las filtra por texto, estado, capa y recurso.
 9. **Calcula el avance ponderado** por longitud y por area, no solo por numero
    de tareas.
-10. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar tareas,
+10. **Programa las actividades** con duracion, antecesores y desfase, y calcula
+    fechas, holguras y ruta critica (ver mas abajo).
+11. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar tareas,
     recursos y ubicaciones a CSV, o una copia completa en `.json` que incluye el
     plano.
 
@@ -100,12 +102,43 @@ Dividir y unir elementos sigue existiendo como herramienta aparte (panel
 *Elemento*), util para separar frentes o responsabilidades, pero ya no hace
 falta para registrar avance.
 
+## Programa maestro
+
+La pestana *Programa* calcula las fechas de la obra como cualquier software de
+planificacion, a partir de dos datos por actividad:
+
+- **Duracion** en dias trabajados.
+- **Antecesores**: de que actividades depende. El enlace es fin-inicio, con un
+  **desfase** en dias que puede ser positivo (esperar mas) o negativo
+  (solaparlas). Se marcan con las fichas *Empieza despues de:*.
+
+Arriba se fija el **inicio de obra** y que dias se trabaja (todos, lunes a
+sabado, o lunes a viernes); los feriados de esa semana no cuentan. Con eso, cada
+fila muestra:
+
+- Las **fechas calculadas** de inicio y termino.
+- La **holgura**: cuantos dias puede atrasarse sin mover el fin de la obra.
+- La marca **CRITICA** cuando no tiene holgura. La cadena de actividades
+  criticas es la **ruta critica**, y aparece resumida arriba.
+- Una **barra** con el tramo que ocupa en el programa, rellena con lo realmente
+  ejecutado en terreno.
+
+Si dos actividades se enlazan en circulo (A espera a B y B espera a A) se avisa
+y esas actividades quedan sin fechar, en vez de calcular cualquier cosa.
+
+Estas fechas alimentan la linea de tiempo: un tramo sin fechas propias hereda
+las de su actividad, de modo que la curva de avance planificado sale del
+programa. Ademas, al registrar avance en una actividad cuyo antecesor todavia no
+termina, se avisa en pantalla ("Ojo: Excavacion va en 40%"). Es solo un aviso: en
+terreno a veces se adelanta a proposito.
+
 ## Linea de tiempo
 
 El boton 🕑 sobre el plano abre un cursor de fechas que reconstruye la obra en
 cualquier dia, sin pedir ningun dato adicional: usa las fechas que ya se
 registran (cuando se marco cada tramo, el inicio y termino planificado de cada
-tarea, y el periodo de cada punto de recursos).
+tarea o el de su actividad en el programa, y el periodo de cada punto de
+recursos).
 
 Al mover el cursor:
 
@@ -216,6 +249,7 @@ js/places.js            puntos del plano donde se ubican los recursos
 js/edits.js             geometria de divisiones y uniones
 js/timeline.js          estado de la obra en una fecha y curva de avance
 js/activities.js        actividades que agrupan las tareas y su avance
+js/schedule.js          programa maestro: fechas, holguras y ruta critica
 js/app.js               union de todo y logica de pantalla
 sw.js                   service worker (uso sin conexion)
 manifest.webmanifest    instalacion como aplicacion

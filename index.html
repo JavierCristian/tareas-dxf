@@ -120,6 +120,7 @@
             <nav class="tabs" role="tablist">
                 <button class="tab active" data-tab="tareas" role="tab">Tareas</button>
                 <button class="tab" data-tab="recursos" role="tab">Recursos</button>
+                <button class="tab" data-tab="programa" role="tab">Programa</button>
                 <button class="tab" data-tab="capas" role="tab">Capas</button>
                 <button class="tab" data-tab="elemento" role="tab">Elemento</button>
             </nav>
@@ -170,6 +171,23 @@
                     <button class="ghost small" id="btn-export-resources">Exportar CSV</button>
                     <button class="ghost small" id="btn-export-places">Ubicaciones CSV</button>
                 </div>
+            </section>
+
+            <section class="tab-panel" data-panel="programa">
+                <div class="schedule-head">
+                    <label>Inicio de obra
+                        <input type="date" id="schedule-start">
+                    </label>
+                    <label>Se trabaja
+                        <select id="schedule-calendar"></select>
+                    </label>
+                </div>
+                <div id="schedule-summary" class="summary"></div>
+                <p id="schedule-warning" class="schedule-warning" hidden></p>
+                <ul id="schedule-list" class="schedule-list"></ul>
+                <p class="modal-hint">La duracion se cuenta en dias trabajados. Una actividad
+                    empieza al dia siguiente de terminar sus antecesoras; el desfase en dias
+                    permite esperar mas (positivo) o solaparlas (negativo).</p>
             </section>
 
             <section class="tab-panel" data-panel="capas">
@@ -403,11 +421,15 @@
             <label>Nombre
                 <input type="text" id="activity-name" required maxlength="120" placeholder="Ej: Excavacion, Tendido, Tapado">
             </label>
+            <label>Duracion en dias trabajados
+                <input type="number" id="activity-duration" min="1" step="1" placeholder="Ej: 10">
+            </label>
             <label>Color en el plano
                 <div id="activity-colors" class="color-row"></div>
             </label>
             <p class="muted">Las tareas de esta actividad se llamaran "Nombre tramo 1", "tramo 2"…
-                y su avance se suma ponderado por la longitud de cada tramo.</p>
+                y su avance se suma ponderado por la longitud de cada tramo.
+                Los antecesores se enlazan en la pestaña Programa.</p>
             <footer class="modal-foot">
                 <button type="button" class="btn danger" id="btn-delete-activity" hidden>Eliminar</button>
                 <div>
