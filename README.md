@@ -28,8 +28,11 @@ sin servidor ni base de datos remota.
    de tareas.
 10. **Programa la obra tramo a tramo**: la duracion sale del rendimiento de
     cada actividad y de la cantidad que el plano ya conoce, y cada tramo espera
-    solo al tramo de su misma ubicacion (ver mas abajo).
-11. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar tareas,
+    solo al tramo de su misma ubicacion, aunque esten en capas distintas
+    (ver mas abajo).
+11. **Carga tramos desde una capa** completa, de una vez, en lugar de ir
+    elemento por elemento.
+12. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar tareas,
     recursos y ubicaciones a CSV, o una copia completa en `.json` que incluye el
     plano.
 
@@ -109,17 +112,43 @@ La pestaña *Programa* calcula las fechas de la obra como cualquier software de
 planificacion, con dos diferencias que vienen de como se ejecuta realmente una
 obra lineal.
 
+### Como conviene organizar el plano
+
+En una obra electrica varios circuitos comparten la misma zanja, y eso se
+refleja en las capas del DXF:
+
+```
+ZANJA        el eje de cada zanja, dibujado UNA vez aunque pasen tres
+             circuitos. De aqui cuelgan excavacion, cama de arena y tapado,
+             con el ancho y la profundidad reales de esa zanja
+MT-C1        recorrido del circuito 1. De aqui cuelga su cable de potencia
+MT-C2        ídem circuito 2
+CAMARAS      camaras y empalmes, para las partidas que se miden por unidad
+```
+
+Conviene ademas **cortar las polilineas en cada aerogenerador**: la
+granularidad del dibujo es la granularidad de los tramos. Si el circuito
+completo es una sola polilinea, queda un solo tramo; cortado en cada maquina,
+cada trecho tiene su fecha y su avance. Si el plano ya viene con polilineas
+largas, se pueden cortar dentro de la aplicacion (ver *Divisiones y uniones*).
+
+Con ese esquema, el boton **+ Desde capa…** de cada actividad crea de una vez
+un tramo por cada elemento de la capa elegida, ya numerados y con la seccion de
+zanja aplicada a todos. Cargar un circuito completo son tres toques, y los
+elementos que ya estaban en un tramo de esa actividad no se repiten.
+
 ### 1. El enlace es entre tramos, no entre actividades
 
 Si la excavacion entre WTG18 y WTG12 termino, el tendido de ese trecho puede
 partir aunque el resto del parque siga excavandose. No hay que esperar a que
 termine toda la excavacion.
 
-Eso no se configura tramo por tramo: se declara una sola vez que **"Tendido de
-cobre va despues de Excavacion"** y la aplicacion baja ese enlace a cada par de
-tramos que **comparten los mismos elementos del plano**. Como la excavacion y el
-tendido de un mismo trecho van sobre la misma zanja del dibujo, el enlace sale
-solo:
+Eso no se configura tramo por tramo: se declara una sola vez que **"Cable de
+potencia va despues de Excavacion"** y la aplicacion baja ese enlace a cada par
+de tramos que **van por el mismo lugar**. No hace falta que sean el mismo
+elemento del plano: la excavacion vive en la capa `ZANJA` y el circuito en
+`MT-C1`, son polilineas distintas, y aun asi se reconocen porque sus trazas
+corren pegadas. El enlace sale solo:
 
 ```
 Excavacion WTG18-WTG12   17/08 → 20/08
@@ -131,9 +160,27 @@ Cada tramo muestra de que otros tramos depende. Cuando la obra no sigue al
 dibujo, el boton **✎ A mano** congela esa lista y deja agregar o quitar
 antecesores puntuales; **↺ Automatico** vuelve a deducirlos del plano.
 
+Cuanto de cerca tienen que correr dos trazas para considerarse la misma zanja
+se ajusta arriba, en **"Zanja compartida: tramos a menos de N m van por el mismo
+lugar"** (2 m por omision). Al cambiarlo se avisa cuantos enlaces quedaron, para
+poder calibrarlo contra el plano real.
+
 Si un tramo tiene actividad antecesora pero ningun tramo vecino que la cumpla,
 se avisa arriba ("sin antecesor en su ubicacion") en vez de dejarlo partir sin
 que nadie lo note.
+
+### Doble conteo en zanjas compartidas
+
+Cada actividad declara si se ejecuta **una vez por zanja** (excavacion, cama,
+tapado: la zanja se abre una sola vez aunque lleve tres circuitos) o **una vez
+por circuito** (cable de potencia, fibra: se repite por cada uno). Se deduce de
+como se mide la actividad y se puede cambiar en *Rendimientos*.
+
+Con eso, la aplicacion avisa cuando dos tramos de una actividad "por zanja"
+pisan los mismos metros — el error tipico de cargar la excavacion una vez por
+circuito, que triplica los m³ — y ofrece eliminar el sobrante. Que dos circuitos
+compartan zanja en una actividad "por circuito" no genera ningun aviso, porque
+ahi efectivamente se tienden dos cables.
 
 ### 2. Los dias no se escriben: salen del rendimiento
 
@@ -298,6 +345,7 @@ js/edits.js             geometria de divisiones y uniones
 js/timeline.js          estado de la obra en una fecha y curva de avance
 js/activities.js        actividades que agrupan las tareas y su avance
 js/schedule.js          programa maestro: rendimientos, fechas por tramo y ruta critica
+js/overlap.js           que tramos van por el mismo lugar (zanjas compartidas)
 js/app.js               union de todo y logica de pantalla
 sw.js                   service worker (uso sin conexion)
 manifest.webmanifest    instalacion como aplicacion

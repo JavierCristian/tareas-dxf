@@ -968,3 +968,18 @@ textarea { resize: vertical; }
     .rate-grid { grid-template-columns: 1fr auto; }
     .rate-grid label:first-child { grid-column: 1 / -1; }
 }
+
+/* ------------------ Zanja compartida y carga desde capa ------------------- */
+
+.schedule-head .wide { grid-column: 1 / -1; }
+.schedule-head .rate-input { display: flex; align-items: center; gap: 6px; }
+.schedule-head .rate-input input { width: 72px; text-align: right; }
+.schedule-head .rate-input em { font-style: normal; font-size: 11.5px; color: var(--muted); }
+
+#schedule-duplicates { display: grid; gap: 6px; }
+#schedule-duplicates strong { font-size: 12.5px; }
+/* El boton va bajo el texto: intercalado partia la frase en dos. */
+.duplicate-line { display: grid; gap: 5px; justify-items: start; }
+.duplicate-line .ghost.small { padding: 2px 8px; min-height: 0; font-size: 11.5px; }
+
+.rate-grid .wide { grid-column: 1 / -1; }

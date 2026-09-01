@@ -38,7 +38,8 @@ import {
 } from './timeline.js';
 import {
     CALENDARS, calendarOf, computeSchedule, workdaysBetween, taskDates, taskLinks,
-    unfinishedPredecessors, RATE_UNITS, rateUnitOf, rateOf, crewsOf, ternasOf, taskAmount
+    unfinishedPredecessors, RATE_UNITS, rateUnitOf, rateOf, crewsOf, ternasOf, taskAmount,
+    ACTIVITY_SCOPES, scopeOf, neighbourhood, DEFAULT_SHARE_TOLERANCE
 } from './schedule.js';
 import {
     applyEdits, makeEdit, removeEdit, editOfShape, canSplit, splitOpen, splitClosed,
@@ -47,7 +48,7 @@ import {
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '11';
+export const APP_VERSION = '12';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -75,6 +76,7 @@ const state = {
     resourceDraft: null,    // recurso en edicion
     placeDraft: null,       // ubicacion en edicion
     activityDraft: null,    // actividad en edicion
+    bulkDraft: null,        // carga de tramos desde una capa
     timeline: null,         // {from, to, days, date, playing, timer} cuando el cursor esta activo
     splitTarget: null,      // figura que se esta dividiendo
     advance: null,          // {shape, fromStart, tasks} al registrar avance
@@ -113,6 +115,7 @@ function init() {
     wireAdvance();
     wireActivities();
     wireSchedule();
+    wireBulk();
     wireSplitModal();
 
     refreshRecent();
@@ -1244,6 +1247,12 @@ function renderActivityGroup(group, shown, nextNumber) {
         add.textContent = `+ Tramo de ${activity.name}`;
         add.addEventListener('click', (e) => { e.stopPropagation(); startTaskInActivity(activity); });
 
+        const bulk = document.createElement('button');
+        bulk.className = 'ghost small';
+        bulk.textContent = '+ Desde capa…';
+        bulk.title = 'Crear un tramo por cada elemento de una capa';
+        bulk.addEventListener('click', (e) => { e.stopPropagation(); openBulkModal(activity); });
+
         const edit = document.createElement('button');
         edit.className = 'ghost small';
         edit.textContent = 'Editar';
@@ -1261,7 +1270,7 @@ function renderActivityGroup(group, shown, nextNumber) {
         down.title = 'Bajar';
         down.addEventListener('click', (e) => { e.stopPropagation(); moveActivity(activity.id, 1); });
 
-        actions.append(add, edit, up, down);
+        actions.append(add, bulk, edit, up, down);
         item.append(actions);
     }
     return item;
@@ -1710,6 +1719,153 @@ function startTaskInActivity(activity) {
     }, { ignoreSelection: true });
 }
 
+/* ------------------------------------------------------------------ */
+/* Tramos desde una capa: carga en bloque                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Con los circuitos en capas propias (MT-C1, MT-C2...) y la zanja en la suya,
+ * cargar un circuito completo es tomar su capa y hacer un tramo por cada
+ * polilinea. Eso es lo que hace este dialogo.
+ */
+function openBulkModal(activity) {
+    state.bulkDraft = { activityId: activity.id };
+    renderBulkActivities(activity.id);
+    renderBulkLayers();
+    $('#bulk-prefix').value = activity.name;
+    $('#bulk-width').value = '';
+    $('#bulk-depth').value = '';
+    $('#bulk-ternas').value = '1';
+    renderBulkPreview();
+    $('#bulk-modal').classList.remove('hidden');
+}
+
+function closeBulkModal() {
+    $('#bulk-modal').classList.add('hidden');
+    state.bulkDraft = null;
+}
+
+function renderBulkActivities(current) {
+    const select = $('#bulk-activity');
+    select.innerHTML = '';
+    for (const activity of state.activities) select.append(new Option(activity.name, activity.id));
+    select.value = current;
+}
+
+/** Capas importadas, con cuantos elementos utiles tiene cada una. */
+function renderBulkLayers() {
+    const select = $('#bulk-layer');
+    const previous = select.value;
+    select.innerHTML = '';
+    for (const layer of state.layers.values()) {
+        if (!layer.imported) continue;
+        const count = bulkShapesOf(layer.name).length;
+        if (!count) continue;
+        select.append(new Option(`${layer.name} (${count})`, layer.name));
+    }
+    if (!select.options.length) select.append(new Option('No hay capas con elementos', ''));
+    if ([...select.options].some((o) => o.value === previous)) select.value = previous;
+}
+
+/** Elementos de una capa que pueden ser un tramo (los que tienen recorrido). */
+function bulkShapesOf(layerName) {
+    return state.shapes.filter((shape) => shape.layer === layerName && measure(shape));
+}
+
+function renderBulkPreview() {
+    const box = $('#bulk-preview');
+    const layerName = $('#bulk-layer').value;
+    const activity = activityById($('#bulk-activity').value);
+    const shapes = bulkShapesOf(layerName);
+    $('#bulk-ternas-row').hidden = !activity || rateOf(activity).unit !== 'ml_fase';
+
+    if (!shapes.length) {
+        box.textContent = 'Esa capa no tiene elementos con recorrido.';
+        return;
+    }
+    // Los que ya estan en un tramo de esta actividad no se repiten.
+    const taken = new Set();
+    for (const task of tasksOf(activity ? activity.id : '', state.tasks)) {
+        for (const ref of task.elements || []) taken.add(ref.id);
+    }
+    const nuevos = shapes.filter((shape) => !taken.has(shape.id));
+    let length = 0;
+    for (const shape of nuevos) length += (measure(shape).length || 0) * state.unitScale;
+
+    box.textContent = nuevos.length
+        ? `Se crearan ${nuevos.length} tramo(s) con ${formatNumber(length)} m en total`
+          + (shapes.length !== nuevos.length ? ` (${shapes.length - nuevos.length} ya estaban cargados).` : '.')
+        : 'Todos los elementos de esa capa ya estan en un tramo de esta actividad.';
+}
+
+async function submitBulk() {
+    const activity = activityById($('#bulk-activity').value);
+    const layerName = $('#bulk-layer').value;
+    if (!activity || !layerName) return;
+
+    const taken = new Set();
+    for (const task of tasksOf(activity.id, state.tasks)) {
+        for (const ref of task.elements || []) taken.add(ref.id);
+    }
+    const shapes = bulkShapesOf(layerName).filter((shape) => !taken.has(shape.id));
+    if (!shapes.length) return toast('No hay elementos nuevos que cargar en esa capa.');
+
+    const width = Number($('#bulk-width').value) || null;
+    const depth = Number($('#bulk-depth').value) || null;
+    const ternas = Math.max(1, Math.round(Number($('#bulk-ternas').value) || 1));
+    const prefix = $('#bulk-prefix').value.trim() || activity.name;
+
+    // Se numeran siguiendo lo que ya exista, en el orden en que vienen del plano.
+    let number = nextBulkNumber(prefix);
+    const created = [];
+    for (const shape of shapes) {
+        const ref = elementRef(shape, anchorOf(shape));
+        if (width) ref.width = width;
+        if (depth) ref.depth = depth;
+        const task = createTask(state.project.id, {
+            activityId: activity.id,
+            title: `${prefix} ${number}`,
+            status: 'pendiente',
+            ternas,
+            elements: [ref]
+        });
+        created.push(task);
+        number++;
+    }
+
+    await saveTasks(created);
+    state.tasks.push(...created);
+    closeBulkModal();
+    renderTasks();
+    renderSchedule();
+    toast(`${created.length} tramo(s) creados desde la capa ${layerName}.`);
+}
+
+/** Siguiente numero libre para una serie "Prefijo N". */
+function nextBulkNumber(prefix) {
+    const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`^${escaped}\\s+(\\d+)$`, 'i');
+    let highest = 0;
+    for (const task of state.tasks) {
+        const match = pattern.exec((task.title || '').trim());
+        if (match) highest = Math.max(highest, Number(match[1]));
+    }
+    return highest + 1;
+}
+
+function wireBulk() {
+    $('#bulk-activity').addEventListener('change', () => {
+        const activity = activityById($('#bulk-activity').value);
+        if (activity) $('#bulk-prefix').value = activity.name;
+        renderBulkPreview();
+    });
+    $('#bulk-layer').addEventListener('change', renderBulkPreview);
+    $('#bulk-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        submitBulk();
+    });
+}
+
 async function moveActivity(id, delta) {
     const sorted = reorder(state.activities, id, delta);
     if (!sorted) return;
@@ -1803,6 +1959,16 @@ function scheduleCalendarId() {
 }
 
 /**
+ * Metros dentro de los cuales dos tramos se consideran "en el mismo lugar".
+ * Con los circuitos en capas propias y la zanja en la suya, es lo que permite
+ * que el tendido reconozca su excavacion aunque sean polilineas distintas.
+ */
+function shareTolerance() {
+    const value = Number(state.project && state.project.shareTolerance);
+    return Number.isFinite(value) && value > 0 ? value : DEFAULT_SHARE_TOLERANCE;
+}
+
+/**
  * Recalcula el programa completo. Es tramo a tramo: cada uno toma sus dias del
  * rendimiento de su actividad y espera solo a los tramos de su misma ubicacion.
  */
@@ -1814,7 +1980,8 @@ function schedulePlan() {
         start: state.project.scheduleStart || '',
         calendar: scheduleCalendarId(),
         shapesById: state.shapesById,
-        metersPerUnit: state.unitScale
+        metersPerUnit: state.unitScale,
+        shareTolerance: shareTolerance()
     });
     return state.schedule;
 }
@@ -1894,6 +2061,7 @@ function renderProgram(schedule) {
 
     $('#schedule-start').value = state.project.scheduleStart || schedule.from;
     $('#schedule-calendar').value = scheduleCalendarId();
+    $('#schedule-tolerance').value = String(shareTolerance());
 
     const avisos = [];
     if (schedule.cycle.length) {
@@ -1903,10 +2071,11 @@ function renderProgram(schedule) {
     if (schedule.orphans.length) {
         const names = schedule.orphans.map((id) => (taskById(id) || {}).title || id);
         avisos.push(`Sin antecesor en su ubicacion (parten libres): ${names.join(', ')}. `
-            + 'Comparte los mismos elementos del plano con su tramo previo, o enlazalos a mano.');
+            + `Sube la tolerancia si sus trazas corren a mas de ${shareTolerance()} m, o enlazalos a mano.`);
     }
     warning.hidden = !avisos.length;
     warning.textContent = avisos.join(' ');
+    renderDuplicates(schedule);
 
     summary.innerHTML = '';
     list.innerHTML = '';
@@ -1932,6 +2101,62 @@ function renderProgram(schedule) {
     for (const activity of state.activities) {
         list.append(renderProgramActivity(activity, schedule, span));
     }
+}
+
+/**
+ * Doble conteo: dos tramos de una actividad "una vez por zanja" que pisan los
+ * mismos metros. Pasa cuando la zanja que llevan tres circuitos se carga una
+ * vez por circuito, y entonces los m3 se cuentan de mas.
+ */
+function renderDuplicates(schedule) {
+    const box = $('#schedule-duplicates');
+    if (!box) return;
+    const found = schedule.duplicates || [];
+    box.innerHTML = '';
+    box.hidden = !found.length;
+    if (!found.length) return;
+
+    const head = document.createElement('strong');
+    head.textContent = found.length === 1
+        ? 'Hay un trecho contado dos veces:'
+        : `Hay ${found.length} trechos contados dos veces:`;
+    box.append(head);
+
+    for (const hit of found) {
+        const line = document.createElement('div');
+        line.className = 'duplicate-line';
+        const text = document.createElement('span');
+        const meters = hit.meters > 0 ? ` (${formatNumber(hit.meters * state.unitScale)} m)` : '';
+        text.textContent = `${hit.activity.name}: "${hit.a.title}" y "${hit.b.title}" van por el mismo lugar${meters}.`;
+        line.append(text);
+
+        // Se ofrece borrar el segundo, que es el que suele sobrar.
+        const drop = document.createElement('button');
+        drop.type = 'button';
+        drop.className = 'ghost small';
+        drop.textContent = `Eliminar "${hit.b.title}"`;
+        drop.addEventListener('click', () => removeDuplicate(hit.b));
+        line.append(drop);
+        box.append(line);
+    }
+
+    const hint = document.createElement('small');
+    hint.className = 'muted';
+    hint.textContent = 'La zanja se excava y se tapa una sola vez aunque pasen varios circuitos. '
+        + 'Si la actividad si se repite por circuito, cambiale el alcance en Rendimientos.';
+    box.append(hint);
+}
+
+async function removeDuplicate(task) {
+    if (!confirm(`¿Eliminar el tramo "${task.title}"? Su avance registrado se pierde.`)) return;
+    await deleteTask(task.id);
+    state.tasks = state.tasks.filter((t) => t.id !== task.id);
+    if (state.draft && state.draft.id === task.id) closeTaskModal();
+    clearTaskHighlight();
+    renderTasks();
+    renderSchedule();
+    renderElementPanel();
+    toast('Tramo eliminado.');
 }
 
 /** Barra de un tramo del programa sobre la ventana completa de la obra. */
@@ -2249,6 +2474,9 @@ function renderRateRow(activity, schedule) {
             <label>Frentes
                 <input type="number" class="rate-crews" min="1" step="1">
             </label>
+            <label class="wide">En una zanja con varios circuitos se ejecuta
+                <select class="rate-scope"></select>
+            </label>
         </div>
         <small class="rate-result muted"></small>`;
 
@@ -2278,6 +2506,12 @@ function renderRateRow(activity, schedule) {
         const next = Math.max(1, Math.round(Number(crews.value) || 1));
         patchActivity(activity, { crews: next });
     });
+
+    const scope = row.querySelector('.rate-scope');
+    for (const option of ACTIVITY_SCOPES) scope.append(new Option(option.label, option.id));
+    scope.value = scopeOf(activity);
+    scope.title = (ACTIVITY_SCOPES.find((o) => o.id === scope.value) || {}).hint || '';
+    scope.addEventListener('change', () => patchActivity(activity, { scope: scope.value }));
 
     const result = row.querySelector('.rate-result');
     if (entry.empty) {
@@ -2315,6 +2549,16 @@ function wireSchedule() {
         state.project.workdays = e.target.value;
         await saveProject(state.project);
         renderSchedule();
+        if (timelineActive()) renderTimeline();
+    });
+    $('#schedule-tolerance').addEventListener('change', async (e) => {
+        if (!state.project) return;
+        const value = Number(e.target.value);
+        state.project.shareTolerance = Number.isFinite(value) && value > 0 ? value : DEFAULT_SHARE_TOLERANCE;
+        await saveProject(state.project);
+        renderSchedule();
+        const enlaces = [...state.schedule.tasks.values()].reduce((n, e2) => n + e2.links.length, 0);
+        toast(`Tolerancia ${state.project.shareTolerance} m: ${enlaces} enlace(s) entre tramos.`);
         if (timelineActive()) renderTimeline();
     });
 }
@@ -3644,12 +3888,16 @@ function wireModals() {
     for (const button of $$('#split-modal [data-close]')) button.addEventListener('click', closeSplitModal);
     $('#split-modal').addEventListener('click', (e) => { if (e.target.id === 'split-modal') closeSplitModal(); });
 
+    for (const button of $$('#bulk-modal [data-close]')) button.addEventListener('click', closeBulkModal);
+    $('#bulk-modal').addEventListener('click', (e) => { if (e.target.id === 'bulk-modal') closeBulkModal(); });
+
     document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
         if (state.pick) return endPick(null);
         // Se cierra siempre el dialogo que esta encima.
         if (!$('#resource-modal').classList.contains('hidden')) return closeResourceModal();
         if (!$('#split-modal').classList.contains('hidden')) return closeSplitModal();
+        if (!$('#bulk-modal').classList.contains('hidden')) return closeBulkModal();
         if (!$('#advance-modal').classList.contains('hidden')) return closeAdvanceModal();
         if (!$('#activity-modal').classList.contains('hidden')) return closeActivityModal();
         if (!$('#place-modal').classList.contains('hidden')) return closePlaceModal();
