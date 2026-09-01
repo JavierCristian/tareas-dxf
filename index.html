@@ -187,9 +187,16 @@
                         <label>Se trabaja
                             <select id="schedule-calendar"></select>
                         </label>
+                        <label class="wide">Zanja compartida: tramos a menos de
+                            <span class="rate-input">
+                                <input type="number" id="schedule-tolerance" min="0.1" step="0.1">
+                                <em>m van por el mismo lugar</em>
+                            </span>
+                        </label>
                     </div>
                     <div id="schedule-summary" class="summary"></div>
                     <p id="schedule-warning" class="schedule-warning" hidden></p>
+                    <div id="schedule-duplicates" class="schedule-warning" hidden></div>
                     <ul id="schedule-list" class="schedule-list"></ul>
                 </div>
 
@@ -452,6 +459,52 @@
                 <div>
                     <button type="button" class="btn" data-close="activity-modal">Cancelar</button>
                     <button type="submit" class="btn primary">Guardar</button>
+                </div>
+            </footer>
+        </form>
+    </div>
+</div>
+
+<!-- --------------------------- Dialogo de tramos por capa --------------------------- -->
+<div id="bulk-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="bulk-modal-title">
+    <div class="modal-card">
+        <header class="modal-head">
+            <h2 id="bulk-modal-title">Tramos desde una capa</h2>
+            <button class="icon-btn" data-close="bulk-modal" aria-label="Cerrar">✕</button>
+        </header>
+        <form id="bulk-form" class="form">
+            <p class="modal-hint">Toma una capa del plano y crea de una vez un tramo por cada
+                elemento. Sirve para cargar un circuito completo sin ir uno por uno.</p>
+            <div class="form-row">
+                <label>Actividad
+                    <select id="bulk-activity"></select>
+                </label>
+                <label>Capa
+                    <select id="bulk-layer"></select>
+                </label>
+            </div>
+            <label>Nombre de los tramos
+                <input type="text" id="bulk-prefix" maxlength="80" placeholder="Ej: Excavacion C1">
+            </label>
+            <div class="form-row" id="bulk-section-row">
+                <label>Ancho de zanja (m)
+                    <input type="number" id="bulk-width" min="0" step="0.05" placeholder="opcional">
+                </label>
+                <label>Profundidad (m)
+                    <input type="number" id="bulk-depth" min="0" step="0.05" placeholder="opcional">
+                </label>
+            </div>
+            <div class="form-row" id="bulk-ternas-row" hidden>
+                <label>Ternas por tramo
+                    <input type="number" id="bulk-ternas" min="1" step="1" value="1">
+                </label>
+            </div>
+            <p id="bulk-preview" class="modal-hint"></p>
+            <footer class="modal-foot">
+                <span></span>
+                <div>
+                    <button type="button" class="btn" data-close="bulk-modal">Cancelar</button>
+                    <button type="submit" class="btn primary" id="btn-bulk-create">Crear tramos</button>
                 </div>
             </footer>
         </form>

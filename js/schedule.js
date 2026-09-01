@@ -7,7 +7,7 @@
  *    WTG12 termino, el tendido de ese trecho puede partir aunque el resto del
  *    parque siga excavandose. El enlace entre actividades ("el tendido va
  *    despues de la excavacion") se baja automaticamente a cada par de tramos
- *    que comparten los mismos elementos del plano.
+ *    que van por el mismo lugar.
  *
  * 2. La duracion no se escribe: sale del RENDIMIENTO de la actividad y de la
  *    cantidad de obra del tramo, que el plano ya conoce (m3 de excavacion,
@@ -16,10 +16,16 @@
  * Ademas, cada actividad tiene un numero de FRENTES: cuantos tramos puede
  * atacar a la vez. Con dos retroexcavadoras solo avanzan dos tramos en
  * paralelo y el resto espera turno.
+ *
+ * "La misma ubicacion" no es "el mismo elemento del plano": los circuitos se
+ * dibujan cada uno en su capa y la zanja en la suya, una sola vez. Son
+ * polilineas distintas que comparten trazado, asi que la vecindad se decide
+ * mirando la geometria (ver overlap.js), con una tolerancia en metros.
  */
 
 import { isoToDate, addDays, daysBetween, todayISO } from './timeline.js';
 import { taskQuantity } from './tasks.js';
+import { pathsOf, pathsShareRoute } from './overlap.js';
 
 /* --------------------------- dias de trabajo ----------------------------- */
 
@@ -145,6 +151,28 @@ export function rateOf(activity) {
     };
 }
 
+/**
+ * Alcance de una actividad: que se repite y que no cuando varios circuitos
+ * comparten zanja.
+ *
+ * - "zanja": se ejecuta UNA vez por zanja aunque pasen tres circuitos
+ *   (excavacion, cama de arena, tapado, compactacion). Si dos tramos de la
+ *   actividad pisan los mismos metros, hay doble conteo.
+ * - "circuito": se repite por cada circuito que pase (cable de potencia,
+ *   fibra). Que dos tramos compartan zanja es lo normal.
+ */
+export const ACTIVITY_SCOPES = [
+    { id: 'zanja', label: 'Una vez por zanja', hint: 'Aunque pasen varios circuitos: excavacion, cama, tapado.' },
+    { id: 'circuito', label: 'Una vez por circuito', hint: 'Se repite por cada circuito que pase: potencia, fibra.' }
+];
+
+/** Alcance de la actividad; si no se fijo, se deduce de como se mide. */
+export function scopeOf(activity) {
+    const raw = activity && activity.scope;
+    if (raw === 'zanja' || raw === 'circuito') return raw;
+    return rateOf(activity).unit === 'ml_fase' ? 'circuito' : 'zanja';
+}
+
 /** Frentes de trabajo: cuantos tramos de la actividad avanzan a la vez. */
 export function crewsOf(activity) {
     const value = Number(activity && activity.crews);
@@ -208,24 +236,68 @@ export function predecessorsOf(item) {
     );
 }
 
+/** Tolerancia por defecto para decidir que dos tramos van por la misma zanja. */
+export const DEFAULT_SHARE_TOLERANCE = 2;
+
 /**
- * Antecesores de un tramo deducidos de la geometria: los tramos de las
- * actividades antecesoras que pisan alguno de sus mismos elementos del plano.
- * Es lo que hace que "Tendido WTG18-WTG12" espere solo a "Excavacion
- * WTG18-WTG12" y no a todo el parque.
+ * Contexto de vecindad: guarda las trazas ya calculadas y la tolerancia en
+ * unidades del plano, para no rehacer el trabajo en cada comparacion.
  */
-export function autoPredecessors(task, activities, tasks) {
+export function neighbourhood({ shapesById = new Map(), metersPerUnit = 1, shareTolerance } = {}) {
+    const meters = Number(shareTolerance);
+    const tolMeters = Number.isFinite(meters) && meters > 0 ? meters : DEFAULT_SHARE_TOLERANCE;
+    return {
+        shapesById,
+        tolerance: tolMeters / (metersPerUnit || 1),
+        toleranceMeters: tolMeters,
+        paths: new Map(),
+        pairs: new Map()
+    };
+}
+
+function pathsFor(task, ctx) {
+    if (!ctx.paths.has(task.id)) ctx.paths.set(task.id, pathsOf(task, ctx.shapesById));
+    return ctx.paths.get(task.id);
+}
+
+/**
+ * Dos tramos van por el mismo lugar: comparten un elemento del plano, o sus
+ * trazas corren pegadas dentro de la tolerancia. Lo segundo es lo que permite
+ * que la excavacion de la capa ZANJA reconozca al tendido de la capa MT-C1.
+ */
+export function shareRoute(a, b, ctx) {
+    const key = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
+    if (ctx.pairs.has(key)) return ctx.pairs.get(key);
+
+    const mine = new Set((a.elements || []).map((ref) => ref.id));
+    let result;
+    if ((b.elements || []).some((ref) => mine.has(ref.id))) {
+        result = { shares: true, ratio: 1, meters: 0, sameElement: true };
+    } else {
+        result = { ...pathsShareRoute(pathsFor(a, ctx), pathsFor(b, ctx), ctx.tolerance), sameElement: false };
+    }
+    ctx.pairs.set(key, result);
+    return result;
+}
+
+/**
+ * Antecesores de un tramo deducidos de su ubicacion: los tramos de las
+ * actividades antecesoras que van por el mismo lugar. Es lo que hace que
+ * "Tendido WTG18-WTG12" espere solo a "Excavacion WTG18-WTG12" y no a todo el
+ * parque.
+ */
+export function autoPredecessors(task, activities, tasks, ctx) {
     const activity = activities.find((a) => a.id === task.activityId);
     if (!activity) return [];
-    const mine = new Set((task.elements || []).map((ref) => ref.id));
-    if (!mine.size) return [];
+    if (!(task.elements || []).length) return [];
 
     const links = [];
     for (const before of predecessorsOf(activity)) {
         for (const other of tasks) {
             if (other.id === task.id || other.activityId !== before.id) continue;
-            const shares = (other.elements || []).some((ref) => mine.has(ref.id));
-            if (shares) links.push({ id: other.id, lag: before.lag, auto: true });
+            if (shareRoute(task, other, ctx).shares) {
+                links.push({ id: other.id, lag: before.lag, auto: true });
+            }
         }
     }
     return links;
@@ -236,22 +308,59 @@ export function autoPredecessors(task, activities, tasks) {
  * tomado el control de ese tramo (linksAuto === false), en cuyo caso manda su
  * propia lista.
  */
-export function taskLinks(task, activities, tasks) {
+export function taskLinks(task, activities, tasks, ctx) {
     if (task.linksAuto === false) {
         return predecessorsOf(task).map((link) => ({ ...link, auto: false }));
     }
-    return autoPredecessors(task, activities, tasks);
+    return autoPredecessors(task, activities, tasks, ctx);
 }
 
-/** Actividades cuyo enlace no encontro ningun tramo vecino, para avisarlo. */
-function orphanOf(task, activities, tasks) {
+/** Tramos cuyo enlace no encontro ningun vecino, para avisarlo. */
+function orphanOf(task, activities, tasks, ctx) {
     if (task.linksAuto === false) return false;
     const activity = activities.find((a) => a.id === task.activityId);
     if (!activity) return false;
     const declared = predecessorsOf(activity).filter((link) =>
         tasks.some((other) => other.activityId === link.id));
     if (!declared.length) return false;
-    return autoPredecessors(task, activities, tasks).length === 0;
+    return autoPredecessors(task, activities, tasks, ctx).length === 0;
+}
+
+/**
+ * Tramos de UNA MISMA actividad que pisan los mismos metros. Casi siempre es
+ * un error de carga: la zanja compartida por tres circuitos se excava una vez,
+ * y si se cargo una vez por circuito los m3 se cuentan de mas.
+ */
+export function duplicateRoutes(activities, tasks, ctx) {
+    const found = [];
+    for (const activity of activities) {
+        const perCircuit = scopeOf(activity) === 'circuito';
+        const own = tasks.filter((task) => task.activityId === activity.id && (task.elements || []).length);
+        for (let i = 0; i < own.length; i++) {
+            for (let j = i + 1; j < own.length; j++) {
+                const hit = shareRoute(own[i], own[j], ctx);
+                if (!hit.shares) continue;
+                // En una actividad que se repite por circuito, compartir zanja
+                // es lo esperado: solo molesta si ademas es el mismo circuito,
+                // es decir, si los dos tramos usan la misma capa del plano.
+                if (perCircuit && !sameLayers(own[i], own[j])) continue;
+                found.push({
+                    activity,
+                    a: own[i],
+                    b: own[j],
+                    meters: hit.meters,
+                    sameElement: hit.sameElement
+                });
+            }
+        }
+    }
+    return found;
+}
+
+/** Dos tramos tocan alguna capa en comun (mismo circuito, en el esquema por capas). */
+function sameLayers(a, b) {
+    const mine = new Set((a.elements || []).map((ref) => ref.layer));
+    return (b.elements || []).some((ref) => mine.has(ref.layer));
 }
 
 /* ------------------------------ orden y ciclos ---------------------------- */
@@ -296,21 +405,22 @@ export function topoOrder(nodes, linksOf) {
  *
  * @param {Array} activities
  * @param {Array} tasks
- * @param {Object} options {start, calendar, shapesById, metersPerUnit}
- * @returns {{tasks: Map, activities: Map, cycle: Array, from, to, orphans: Array}}
+ * @param {Object} options {start, calendar, shapesById, metersPerUnit, shareTolerance}
+ * @returns {{tasks, activities, cycle, from, to, orphans, duplicates, context}}
  */
 export function computeSchedule(activities, tasks, options = {}) {
     const { start, calendar = 'todos', shapesById = new Map(), metersPerUnit = 1 } = options;
     const cal = calendarOf(calendar);
     const projectStart = nextWorkday(start || todayISO(), cal);
     const activityById = new Map(activities.map((a) => [a.id, a]));
+    const ctx = neighbourhood(options);
 
     // Solo entran al programa los tramos que pertenecen a una actividad: son
     // los unicos con rendimiento y con quien encadenarse.
     const nodes = tasks.filter((task) => activityById.has(task.activityId));
     const linkCache = new Map();
     const linksOf = (task) => {
-        if (!linkCache.has(task.id)) linkCache.set(task.id, taskLinks(task, activities, tasks));
+        if (!linkCache.has(task.id)) linkCache.set(task.id, taskLinks(task, activities, tasks, ctx));
         return linkCache.get(task.id);
     };
 
@@ -332,7 +442,7 @@ export function computeSchedule(activities, tasks, options = {}) {
             links: linksOf(task),
             broken: cycleSet.has(task.id)
         });
-        if (orphanOf(task, activities, tasks)) orphans.push(task.id);
+        if (orphanOf(task, activities, tasks, ctx)) orphans.push(task.id);
     }
 
     /*
@@ -488,6 +598,8 @@ export function computeSchedule(activities, tasks, options = {}) {
         activities: byActivity,
         cycle,
         orphans,
+        duplicates: duplicateRoutes(activities, tasks, ctx),
+        context: ctx,
         from: projectStart,
         to: projectEnd
     };
@@ -508,10 +620,10 @@ export function taskDates(task, schedule) {
  * Tramos antecesores que todavia no terminan, para avisar en terreno cuando se
  * registra avance antes de tiempo. Es un aviso, no un impedimento.
  */
-export function unfinishedPredecessors(task, activities, tasks, progressOf) {
+export function unfinishedPredecessors(task, activities, tasks, progressOf, ctx) {
     const byId = new Map(tasks.map((t) => [t.id, t]));
     const pending = [];
-    for (const link of taskLinks(task, activities, tasks)) {
+    for (const link of taskLinks(task, activities, tasks, ctx || neighbourhood())) {
         const before = byId.get(link.id);
         if (!before) continue;
         const pct = progressOf(before);
