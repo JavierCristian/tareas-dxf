@@ -23,7 +23,8 @@ import {
 } from './tasks.js';
 import {
     RESOURCE_TYPES, ROLE_HINTS, CODE_HINTS, typeOf, createResource, normalizeResource,
-    workload, resourcesToCsv
+    workload, resourcesToCsv, resourcesCsvTemplate, resourcesFromCsv,
+    RESOURCE_RATE_UNITS, rateUnitLabel, dailyRateOf, hoursPerDayOf, spendOf
 } from './resources.js';
 import {
     createPlace, normalizePlace, placeIcon, placeColor, placeTitle, placesOf, placesAt, placesToCsv
@@ -48,7 +49,7 @@ import {
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '12';
+export const APP_VERSION = '13';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -102,6 +103,7 @@ function init() {
     fillSelect($('#task-priority'), PRIORITIES);
     fillSelect($('#filter-status'), STATUSES, 'todas', 'Todos los estados');
     fillSelect($('#resource-type'), RESOURCE_TYPES);
+    fillSelect($('#resource-rate-unit'), RESOURCE_RATE_UNITS);
     fillSelect($('#schedule-calendar'), CALENDARS);
 
     wireWelcome();
@@ -1987,6 +1989,12 @@ function schedulePlan() {
 }
 
 /** Fecha corta (17/08) para las filas: el año ya va en el resumen. */
+/** Monto con separador de miles, que es como se lee la plata en obra. */
+function formatMoney(value) {
+    if (!Number.isFinite(value)) return '-';
+    return '$' + Math.round(value).toLocaleString('es-CL');
+}
+
 function shortDate(iso) {
     if (!iso) return '';
     const [, m, d] = iso.split('-');
@@ -2097,6 +2105,17 @@ function renderProgram(schedule) {
         summary.append(chip(`Ruta critica: ${critical.map((a) => a.name).join(' → ')}`, '#ef4444'));
     }
 
+    // Costo y combustible de toda la obra, si los recursos los declaran.
+    const obra = { cost: 0, fuel: 0 };
+    for (const activity of state.activities) {
+        const spend = activitySpend(activity.id, schedule);
+        if (!spend) continue;
+        obra.cost += spend.cost;
+        obra.fuel += spend.fuel;
+    }
+    if (obra.cost > 0) summary.append(chip(`${formatMoney(obra.cost)} en recursos`, '#22c55e'));
+    if (obra.fuel > 0) summary.append(chip(`${formatNumber(obra.fuel)} L de combustible`, '#f59e0b'));
+
     const span = Math.max(1, daysBetween(schedule.from, schedule.to) + 1);
     for (const activity of state.activities) {
         list.append(renderProgramActivity(activity, schedule, span));
@@ -2159,6 +2178,33 @@ async function removeDuplicate(task) {
     toast('Tramo eliminado.');
 }
 
+/**
+ * Lo que cuesta y consume un tramo: los dias que le da el programa por lo que
+ * cobran y gastan por hora los recursos que tiene asignados.
+ */
+function tramoSpend(task, entry) {
+    if (!entry || !entry.duration) return null;
+    const assigned = (task.resources || []).map(resourceById).filter(Boolean);
+    if (!assigned.length) return null;
+    const spend = spendOf(assigned, entry.duration);
+    return (spend.cost > 0 || spend.fuel > 0) ? spend : null;
+}
+
+/** Suma de costo y combustible de todos los tramos de una actividad. */
+function activitySpend(activityId, schedule) {
+    const total = { cost: 0, fuel: 0, hours: 0 };
+    let any = false;
+    for (const task of tasksOf(activityId, state.tasks)) {
+        const spend = tramoSpend(task, schedule.tasks.get(task.id));
+        if (!spend) continue;
+        any = true;
+        total.cost += spend.cost;
+        total.fuel += spend.fuel;
+        total.hours += spend.hours;
+    }
+    return any ? total : null;
+}
+
 /** Barra de un tramo del programa sobre la ventana completa de la obra. */
 function ganttBar(entry, schedule, span, pct, critical) {
     const bar = document.createElement('div');
@@ -2216,6 +2262,9 @@ function renderProgramActivity(activity, schedule, span) {
         if (entry.amount > 0) meta.append(tag(`${formatNumber(entry.amount)} ${entry.unit}`));
         if (entry.crews > 1) meta.append(tag(`${entry.crews} frentes`));
         meta.append(tag(`${Math.round(progress.pct)}% ejecutado`));
+        const spend = activitySpend(activity.id, schedule);
+        if (spend && spend.cost > 0) meta.append(tag(formatMoney(spend.cost)));
+        if (spend && spend.fuel > 0) meta.append(tag(`${formatNumber(spend.fuel)} L`));
         if (entry.critical) {
             const flag = document.createElement('span');
             flag.className = 'schedule-flag';
@@ -2324,6 +2373,9 @@ function renderProgramTask(task, activity, schedule, span) {
         if (entry.assumed) meta.append(tag('sin rendimiento', true));
         if (entry.crews > 1) meta.append(tag(`frente ${entry.crew}`));
         if (progress > 0) meta.append(tag(`${progress}% ejecutado`));
+        const spend = tramoSpend(task, entry);
+        if (spend && spend.cost > 0) meta.append(tag(formatMoney(spend.cost)));
+        if (spend && spend.fuel > 0) meta.append(tag(`${formatNumber(spend.fuel)} L`));
         if (entry.broken) meta.append(tag('en circulo', true));
         else if (entry.critical) {
             const flag = document.createElement('span');
@@ -2971,6 +3023,53 @@ function wireTimeline() {
 /* Recursos: personal y maquinaria                                     */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Carga recursos desde una planilla. Las filas que traen un identificador o un
+ * nombre ya conocido actualizan al recurso en vez de duplicarlo, de modo que se
+ * puede exportar, corregir en Excel y volver a subir.
+ */
+async function importResourcesCsv(file) {
+    let text;
+    try {
+        text = await readFileText(file);
+    } catch (error) {
+        console.error(error);
+        return alert('No se pudo leer el archivo.\n\n' + (error.message || error));
+    }
+
+    let result;
+    try {
+        result = resourcesFromCsv(text, state.project.id, state.resources);
+    } catch (error) {
+        console.error(error);
+        return alert('El archivo no parece una planilla de recursos.\n\n' + (error.message || error));
+    }
+
+    if (!result.created.length && !result.updated.length) {
+        return alert('No se encontro ningun recurso en el archivo.\n\n'
+            + 'Hace falta al menos una columna "nombre". Puedes bajar la plantilla '
+            + 'con el boton "Plantilla CSV" para ver las columnas que se reconocen.\n\n'
+            + `Columnas leidas: ${result.columns.join(', ') || '(ninguna)'}`);
+    }
+
+    const touched = [...result.created, ...result.updated];
+    await saveResources(touched);
+    for (const resource of result.created) state.resources.push(resource);
+    state.resources.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'es'));
+
+    renderResources();
+    renderResourceFilter();
+    renderPlaces();
+    renderTasks();
+    renderSchedule();
+
+    const bits = [];
+    if (result.created.length) bits.push(`${result.created.length} agregado(s)`);
+    if (result.updated.length) bits.push(`${result.updated.length} actualizado(s)`);
+    if (result.skipped) bits.push(`${result.skipped} fila(s) sin nombre, omitida(s)`);
+    toast(`Recursos: ${bits.join(', ')}.`);
+}
+
 function resourceById(id) {
     return state.resources.find((resource) => resource.id === id) || null;
 }
@@ -3029,6 +3128,16 @@ function renderResources() {
         if (resource.group) meta.append(tag(resource.group));
         if (resource.code) meta.append(tag(resource.code));
         if (resource.phone) meta.append(tag(resource.phone));
+        const daily = dailyRateOf(resource);
+        if (daily) meta.append(tag(`${formatNumber(daily.perHour)} ${rateUnitLabel(daily.unit)}/h`));
+        if (resource.fuel > 0) meta.append(tag(`${formatNumber(resource.fuel)} L/h`));
+        if (resource.cost > 0) meta.append(tag(`${formatMoney(resource.cost)}/h`));
+        // Mantencion a la vista cuando el horometro se acerca a la proxima.
+        if (resource.hourmeter > 0 && resource.nextService > 0) {
+            const left = resource.nextService - resource.hourmeter;
+            if (left <= 0) meta.append(tag('Mantencion vencida', true));
+            else if (left <= 250) meta.append(tag(`Mantencion en ${formatNumber(left)} h`, true));
+        }
         if (!resource.active) meta.append(tag('Sin actividad'));
         meta.append(tag(entry.total ? `${entry.total} tarea(s) · ${entry.open} abierta(s)` : 'Sin tareas'));
 
@@ -3090,6 +3199,33 @@ function updateResourceHints() {
     const type = $('#resource-type').value;
     $('#resource-role').placeholder = ROLE_HINTS[type] || '';
     $('#resource-code').placeholder = CODE_HINTS[type] || '';
+    // El rendimiento, el combustible y la mantencion son cosa de maquinaria.
+    const machine = type === 'maquina';
+    $('#resource-rate-row').hidden = !machine;
+    $('#resource-fuel-row').hidden = !machine;
+    $('#resource-service-row').hidden = !machine;
+    renderResourceRateHint();
+}
+
+/** Traduce el rendimiento por hora a lo que rinde en una jornada. */
+function renderResourceRateHint() {
+    const box = $('#resource-rate-hint');
+    if (!box) return;
+    const value = Number($('#resource-rate').value);
+    const unit = $('#resource-rate-unit').value;
+    const hours = Number($('#resource-hours').value) || 8;
+    const cost = Number($('#resource-cost').value) || 0;
+    const fuel = Number($('#resource-fuel').value) || 0;
+
+    const bits = [];
+    if (value > 0 && unit) {
+        bits.push(`${formatNumber(value * hours)} ${rateUnitLabel(unit)} por jornada de ${hours} h`);
+    }
+    if (cost > 0) bits.push(`${formatMoney(cost * hours)} por jornada`);
+    if (fuel > 0) bits.push(`${formatNumber(fuel * hours)} L por jornada`);
+    box.textContent = bits.length
+        ? bits.join(' · ')
+        : 'Con el rendimiento por hora y la jornada se calculan los dias de cada tramo y el gasto de la obra.';
 }
 
 function openResourceModal(resource, isNew = false) {
@@ -3105,6 +3241,15 @@ function openResourceModal(resource, isNew = false) {
     $('#resource-phone').value = resource.phone || '';
     $('#resource-active').checked = resource.active !== false;
     $('#resource-notes').value = resource.notes || '';
+    const rate = resource.rate || {};
+    $('#resource-rate').value = rate.value > 0 ? String(rate.value) : '';
+    $('#resource-rate-unit').value = rate.unit || '';
+    $('#resource-hours').value = resource.hoursPerDay > 0 ? String(resource.hoursPerDay) : '';
+    $('#resource-cost').value = resource.cost > 0 ? String(resource.cost) : '';
+    $('#resource-fuel').value = resource.fuel > 0 ? String(resource.fuel) : '';
+    $('#resource-brand').value = resource.brand || '';
+    $('#resource-hourmeter').value = resource.hourmeter > 0 ? String(resource.hourmeter) : '';
+    $('#resource-service').value = resource.nextService > 0 ? String(resource.nextService) : '';
     $('#btn-delete-resource').hidden = isNew;
     updateResourceHints();
     $('#resource-modal').classList.remove('hidden');
@@ -3126,9 +3271,23 @@ function wireResources() {
         openResourceModal(createResource(state.project.id, { type: 'maquina' }), true));
     $('#resource-search').addEventListener('input', renderResources);
     $('#resource-type').addEventListener('change', updateResourceHints);
+    for (const id of ['#resource-rate', '#resource-rate-unit', '#resource-hours', '#resource-cost', '#resource-fuel']) {
+        $(id).addEventListener('input', renderResourceRateHint);
+    }
     $('#filter-resource').addEventListener('change', (e) => {
         state.filters.resource = e.target.value;
         renderTasks();
+    });
+
+    $('#btn-csv-template').addEventListener('click', () => {
+        download('plantilla-recursos.csv', resourcesCsvTemplate(), 'text/csv;charset=utf-8');
+        toast('Plantilla descargada: llenala en Excel y subela con "Importar CSV".');
+    });
+    $('#btn-import-resources').addEventListener('click', () => $('#resource-csv-input').click());
+    $('#resource-csv-input').addEventListener('change', async (e) => {
+        const file = e.target.files && e.target.files[0];
+        e.target.value = '';
+        if (file) await importResourcesCsv(file);
     });
 
     $('#btn-export-resources').addEventListener('click', () => {
@@ -3155,6 +3314,17 @@ function wireResources() {
         draft.phone = $('#resource-phone').value.trim();
         draft.active = $('#resource-active').checked;
         draft.notes = $('#resource-notes').value.trim();
+        const number = (id) => {
+            const value = Number($(id).value);
+            return Number.isFinite(value) && value > 0 ? value : null;
+        };
+        draft.rate = { unit: $('#resource-rate-unit').value, value: number('#resource-rate') || 0 };
+        draft.hoursPerDay = number('#resource-hours');
+        draft.cost = number('#resource-cost') || 0;
+        draft.fuel = number('#resource-fuel') || 0;
+        draft.brand = $('#resource-brand').value.trim();
+        draft.hourmeter = number('#resource-hourmeter');
+        draft.nextService = number('#resource-service');
         if (!draft.name) return;
 
         const isNew = draft.isNew;
@@ -3177,6 +3347,7 @@ function wireResources() {
         renderResourceFilter();
         renderPlaces();
         renderTasks();
+        renderSchedule();
         toast(isNew ? 'Recurso agregado.' : 'Recurso actualizado.');
     });
 

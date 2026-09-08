@@ -325,7 +325,18 @@ textarea { resize: vertical; }
 .task-actions button { width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--muted); }
 .task-actions button:hover { color: var(--text); border-color: #3a4657; }
 
-.panel-footer { display: flex; gap: 8px; padding: 10px 12px calc(10px + var(--safe-bottom)); border-top: 1px solid var(--line); }
+/* El pie del panel nunca se encoge ni se va fuera: lleva los botones de
+   exportar y antes quedaba empujado bajo el borde por listas largas. */
+.panel-footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    flex: none;
+    padding: 10px 12px calc(10px + var(--safe-bottom));
+    border-top: 1px solid var(--line);
+}
+/* Zona que se desplaza dentro de una pestana; el resto queda fijo. */
+.panel-scroll { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
 
 .layer-actions { display: flex; gap: 8px; padding: 12px; flex-wrap: wrap; }
 .layer-list { flex: 1; overflow: auto; padding: 0 12px calc(12px + var(--safe-bottom)); display: grid; gap: 6px; align-content: start; }
@@ -348,7 +359,7 @@ textarea { resize: vertical; }
 .layer-item .eye { width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--muted); }
 .layer-item .eye.on { color: var(--text); border-color: var(--accent); }
 
-.element-detail { padding: 12px; overflow: auto; }
+.element-detail { padding: 12px; overflow: auto; flex: 1; min-height: 0; }
 .element-detail dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0 0 14px; font-size: 14px; }
 .element-detail dt { color: var(--muted); }
 .element-detail dd { margin: 0; word-break: break-all; }
@@ -406,11 +417,19 @@ textarea { resize: vertical; }
 .layer-pick .name strong { display: block; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .layer-pick .name span { font-size: 12px; color: var(--muted); }
 
-.form { display: grid; gap: 12px; padding: 16px; overflow: auto; }
+.form { display: grid; gap: 12px; padding: 16px; overflow: auto; min-height: 0; }
 .form label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
 .form label input, .form label select, .form label textarea { color: var(--text); }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.form .modal-foot { margin: 4px -16px calc(-16px - var(--safe-bottom)); }
+/* El pie queda pegado al borde de la tarjeta: en un formulario largo se iba
+   fuera del recorte y no habia como llegar a Cancelar ni a Guardar. */
+.form .modal-foot {
+    margin: 4px -16px calc(-16px - var(--safe-bottom));
+    position: sticky;
+    bottom: calc(-16px - var(--safe-bottom));
+    background: var(--bg-panel);
+    z-index: 1;
+}
 
 .linked { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: grid; gap: 8px; }
 .linked-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -782,7 +801,8 @@ textarea { resize: vertical; }
     border: 1px solid rgba(239, 68, 68, 0.4);
 }
 
-.schedule-list { list-style: none; margin: 0; padding: 8px 12px 4px; display: grid; gap: 8px; overflow-y: auto; }
+.schedule-list { list-style: none; margin: 0; padding: 8px 12px 4px; display: grid; gap: 8px; overflow-y: auto; flex: 1; min-height: 0; align-content: start; }
+.sub-panel > .modal-hint { flex: none; }
 .schedule-row {
     border: 1px solid var(--line);
     border-radius: 11px;

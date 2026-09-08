@@ -155,20 +155,25 @@
                     <button class="ghost small" id="btn-new-person">+ Personal</button>
                     <button class="ghost small" id="btn-new-machine">+ Maquinaria</button>
                     <button class="ghost small" id="btn-new-place">+ Punto en el plano</button>
+                    <button class="ghost small" id="btn-import-resources">Importar CSV</button>
+                    <input type="file" id="resource-csv-input" accept=".csv,text/csv,text/plain" hidden>
                 </div>
                 <div class="filters">
                     <input type="search" id="resource-search" placeholder="Buscar por nombre, cargo o cuadrilla">
                 </div>
-                <ul id="resource-list" class="resource-list"></ul>
-                <div class="places-block">
-                    <div class="linked-head">
-                        <strong>Ubicaciones en el plano</strong>
-                        <span id="place-count" class="muted"></span>
+                <div class="panel-scroll">
+                    <ul id="resource-list" class="resource-list"></ul>
+                    <div class="places-block">
+                        <div class="linked-head">
+                            <strong>Ubicaciones en el plano</strong>
+                            <span id="place-count" class="muted"></span>
+                        </div>
+                        <ul id="place-list" class="resource-list"></ul>
                     </div>
-                    <ul id="place-list" class="resource-list"></ul>
                 </div>
                 <div class="panel-footer">
                     <button class="ghost small" id="btn-export-resources">Exportar CSV</button>
+                    <button class="ghost small" id="btn-csv-template">Plantilla CSV</button>
                     <button class="ghost small" id="btn-export-places">Ubicaciones CSV</button>
                 </div>
             </section>
@@ -375,6 +380,43 @@
                 <label>Telefono
                     <input type="tel" id="resource-phone" maxlength="40" placeholder="+56 9 …">
                 </label>
+            </div>
+
+            <div class="linked">
+                <div class="linked-head"><strong>Rendimiento y costos</strong></div>
+                <div class="form-row" id="resource-rate-row">
+                    <label>Rendimiento por hora
+                        <input type="number" id="resource-rate" min="0" step="any" placeholder="Ej: 60">
+                    </label>
+                    <label>Medido en
+                        <select id="resource-rate-unit"></select>
+                    </label>
+                </div>
+                <div class="form-row">
+                    <label>Horas por jornada
+                        <input type="number" id="resource-hours" min="1" max="24" step="0.5" placeholder="8">
+                    </label>
+                    <label>Costo por hora
+                        <input type="number" id="resource-cost" min="0" step="any" placeholder="Ej: 45000">
+                    </label>
+                </div>
+                <div class="form-row" id="resource-fuel-row">
+                    <label>Combustible (L por hora)
+                        <input type="number" id="resource-fuel" min="0" step="any" placeholder="Ej: 18">
+                    </label>
+                    <label>Marca
+                        <input type="text" id="resource-brand" maxlength="80" placeholder="Ej: Caterpillar">
+                    </label>
+                </div>
+                <div class="form-row" id="resource-service-row">
+                    <label>Horometro actual
+                        <input type="number" id="resource-hourmeter" min="0" step="any" placeholder="Ej: 4820">
+                    </label>
+                    <label>Proxima mantencion (horas)
+                        <input type="number" id="resource-service" min="0" step="any" placeholder="Ej: 5000">
+                    </label>
+                </div>
+                <small id="resource-rate-hint" class="muted"></small>
             </div>
             <label class="check-line">
                 <input type="checkbox" id="resource-active" checked>

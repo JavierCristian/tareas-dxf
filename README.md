@@ -19,7 +19,9 @@ sin servidor ni base de datos remota.
 5. **Divide y une elementos del plano** para que una actividad corresponda al
    tramo real ejecutado (ver mas abajo).
 6. **Lleva el registro de recursos**: personal y maquinaria de la obra, con
-   cargo, cuadrilla, identificador y telefono, asignables a cada tarea.
+   cargo, cuadrilla, identificador, telefono, rendimiento por hora, consumo de
+   combustible y costo por hora. Se cargan de a uno o desde una planilla CSV
+   (ver mas abajo).
 7. **Reparte los recursos sobre el plano** con puntos que indican quien esta
    trabajando en cada frente (ver mas abajo).
 8. **Muestra las tareas sobre el plano** como marcadores numerados con el color
@@ -251,6 +253,48 @@ completa. Lo planificado se reparte linealmente entre el inicio y el termino de
 cada tarea. Las tareas sin tramos marcados no tienen historial: se muestran solo
 con su plan.
 
+## Recursos: rendimiento, combustible y costo
+
+Cada recurso guarda, ademas de sus datos de contacto, lo que hace falta para
+controlar la obra:
+
+| Dato | Para que sirve |
+| --- | --- |
+| Rendimiento por hora (m³, m, unidades) | Cuanto produce el equipo en una hora |
+| Horas por jornada | Convierte ese rendimiento en produccion diaria |
+| Combustible (L por hora) | Consumo estimado de la obra |
+| Costo por hora | Costo de la obra, por tramo y por actividad |
+| Marca, horometro, proxima mantencion | Control del equipo; avisa cuando faltan menos de 250 h |
+
+Una retroexcavadora de 60 m³/h con jornada de 9 h rinde 540 m³ al dia, cuesta
+$405.000 la jornada y consume 166,5 L. El dialogo muestra esa traduccion
+mientras se escriben los datos.
+
+Con los recursos asignados a cada tramo y los dias que le da el programa, la
+pestaña *Programa* muestra el **costo y el combustible** de cada tramo, de cada
+actividad y de la obra completa, sin llevar otra planilla aparte.
+
+### Cargar recursos desde una planilla
+
+El boton **Importar CSV** de la pestaña *Recursos* lee una planilla de Excel.
+**Plantilla CSV** descarga un archivo de ejemplo con las columnas reconocidas:
+
+```
+tipo;nombre;cargo;identificador;marca;cuadrilla;telefono;rendimiento_hora;
+unidad_rendimiento;horas_jornada;combustible_l_hora;costo_hora;horometro;
+proxima_mantencion_h;estado;notas
+```
+
+De todas, **solo "nombre" es obligatoria**; el orden no importa y los nombres
+admiten variantes (*patente* o *rut* por identificador, *valor_hora* por costo,
+*consumo* por combustible, y asi). Lee separador punto y coma, coma o
+tabulacion, y entiende los numeros como los escribe una planilla en espanol:
+`45.000` son cuarenta y cinco mil y `18,5` son dieciocho coma cinco.
+
+Las filas cuyo identificador o nombre ya existe **actualizan** al recurso en vez
+de duplicarlo, de modo que se puede exportar con *Exportar CSV*, corregir en
+Excel y volver a subir.
+
 ## Recursos repartidos en el plano
 
 En la pestana *Recursos*, ademas del listado de personal y maquinaria, se
@@ -339,7 +383,8 @@ js/scene.js             indice espacial, seleccion y medidas
 js/viewer.js            lienzo, camara y gestos
 js/db.js                almacenamiento local (IndexedDB / localStorage)
 js/tasks.js             modelo de tareas, tramos, avance, cubicacion y exportacion
-js/resources.js         modelo de personal y maquinaria
+js/resources.js         personal y maquinaria: rendimiento, combustible y costo
+js/csv.js               lectura de planillas CSV (separadores y coma decimal)
 js/places.js            puntos del plano donde se ubican los recursos
 js/edits.js             geometria de divisiones y uniones
 js/timeline.js          estado de la obra en una fecha y curva de avance
