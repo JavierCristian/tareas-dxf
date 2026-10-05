@@ -1,0 +1,124 @@
+/*
+ * Parte diario: hoja clara pensada para imprimir o mandar por correo, aunque
+ * la aplicacion sea oscura. Los mismos estilos sirven en pantalla, al imprimir
+ * y en el archivo .html que se descarga.
+ */
+
+.report {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: flex;
+    flex-direction: column;
+    background: #f1f3f6;
+}
+
+.report-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    padding: calc(8px + var(--safe-top)) 10px 8px;
+    background: var(--bg-soft);
+    border-bottom: 1px solid var(--line);
+    color: var(--text);
+}
+.report-bar strong { font-size: 15px; margin-right: 4px; }
+.report-bar input[type="date"] { width: auto; min-height: 36px; padding: 6px 10px; }
+.report-bar .grow { flex: 1; }
+
+.report-scroll { flex: 1; min-height: 0; overflow: auto; padding: 16px; }
+
+/* La hoja: ancho de carta, fondo blanco y tipografia de documento. */
+.report-sheet {
+    max-width: 860px;
+    margin: 0 auto;
+    background: #fff;
+    color: #1a2029;
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .18);
+    padding: 28px 32px 32px;
+    font-size: 13.5px;
+    line-height: 1.5;
+}
+.report-sheet h1 { font-size: 21px; margin: 0 0 2px; }
+.report-sheet h2 {
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: #5b6675;
+    margin: 26px 0 10px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #dde2e8;
+}
+.report-sheet p { margin: 0 0 8px; }
+.report-head { display: flex; align-items: flex-start; gap: 16px; border-bottom: 2px solid #1a2029; padding-bottom: 12px; }
+.report-head .grow { flex: 1; min-width: 0; }
+.report-head .when { text-align: right; font-size: 13px; color: #5b6675; white-space: nowrap; }
+.report-head .when strong { display: block; font-size: 16px; color: #1a2029; }
+.report-sub { color: #5b6675; font-size: 13px; }
+
+/* Tarjetas del resumen. */
+.report-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 14px; }
+.report-card { border: 1px solid #dde2e8; border-radius: 8px; padding: 10px 12px; background: #f8f9fb; }
+.report-card span { display: block; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: #5b6675; }
+.report-card strong { display: block; font-size: 19px; margin-top: 2px; }
+.report-card small { color: #5b6675; font-size: 11.5px; }
+.report-card.good strong { color: #15803d; }
+.report-card.bad strong { color: #b91c1c; }
+
+.report-sheet table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.report-sheet th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: #5b6675;
+    border-bottom: 1px solid #c9d1da;
+    padding: 6px 8px 6px 0;
+}
+.report-sheet td { padding: 6px 8px 6px 0; border-bottom: 1px solid #eef1f4; vertical-align: top; }
+.report-sheet td.num, .report-sheet th.num { text-align: right; padding-right: 0; white-space: nowrap; }
+.report-sheet tr.late td { color: #b91c1c; }
+.report-empty { color: #70798a; font-style: italic; }
+
+.report-flag {
+    display: inline-block;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid currentColor;
+}
+.report-flag.on { color: #15803d; }
+.report-flag.off { color: #b91c1c; }
+
+.report-figure { margin: 0; }
+.report-figure canvas, .report-figure img { display: block; width: 100%; border: 1px solid #dde2e8; border-radius: 8px; background: #fff; }
+.report-map { height: 320px; }
+.report-curve { height: 220px; }
+.report-figure figcaption { font-size: 11.5px; color: #5b6675; margin-top: 6px; }
+.report-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 11.5px; color: #5b6675; margin-top: 6px; }
+.report-legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+
+.report-foot { margin-top: 26px; padding-top: 10px; border-top: 1px solid #dde2e8; font-size: 11.5px; color: #70798a; }
+
+@media (max-width: 760px) {
+    .report-scroll { padding: 10px; }
+    .report-sheet { padding: 18px 16px 22px; }
+    .report-cards { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* Al imprimir queda solo la hoja, sin barras ni sombras. */
+@media print {
+    body > *:not(#report) { display: none !important; }
+    .report { position: static; background: #fff; }
+    .report-bar { display: none !important; }
+    .report-scroll { overflow: visible; padding: 0; }
+    .report-sheet { max-width: none; box-shadow: none; border-radius: 0; padding: 0; }
+    .report-sheet h2 { break-after: avoid; }
+    .report-sheet table { break-inside: auto; }
+    .report-sheet tr { break-inside: avoid; }
+    .report-figure { break-inside: avoid; }
+}

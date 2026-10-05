@@ -72,18 +72,26 @@ export function normalizeSpans(spans, total) {
             date: span.date || null
         }))
         .filter((span) => span.to - span.from > 1e-9)
-        .sort((a, b) => a.from - b.from);
+        .sort((a, b) => (a.from - b.from) || String(a.date || '').localeCompare(String(b.date || '')));
 
     const merged = [];
     for (const span of clean) {
         const last = merged[merged.length - 1];
         if (last && span.from <= last.to + 1e-9) {
-            last.to = Math.max(last.to, span.to);
-            // Se conserva la fecha mas reciente del tramo fusionado.
-            if (span.date && (!last.date || span.date > last.date)) last.date = span.date;
-        } else {
-            merged.push({ ...span });
+            // Pegados y del mismo dia: son un solo avance.
+            if (last.date === span.date) {
+                last.to = Math.max(last.to, span.to);
+                continue;
+            }
+            // De dias distintos se guardan por separado, recortando lo que ya
+            // estaba registrado. Fundirlos haria perder el dia en que se
+            // ejecuto cada parte, que es lo que necesitan el parte diario y
+            // la curva de avance.
+            const from = Math.max(span.from, last.to);
+            if (span.to - from > 1e-9) merged.push({ from, to: span.to, date: span.date });
+            continue;
         }
+        merged.push({ ...span });
     }
     return merged;
 }

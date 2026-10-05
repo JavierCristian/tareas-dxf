@@ -34,7 +34,10 @@ sin servidor ni base de datos remota.
     (ver mas abajo).
 11. **Carga tramos desde una capa** completa, de una vez, en lugar de ir
     elemento por elemento.
-12. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar tareas,
+12. **Emite el parte diario** de la obra: lo ejecutado ese dia, lo programado
+    para el siguiente, el rendimiento real, la curva de avance y el plano,
+    listo para imprimir o enviar (ver mas abajo).
+13. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar tareas,
     recursos y ubicaciones a CSV, o una copia completa en `.json` que incluye el
     plano.
 
@@ -229,6 +232,35 @@ maestro. Ademas, al registrar avance en un tramo cuyo antecesor todavia no
 termina, se avisa en pantalla ("Ojo: Excavacion WTG18-WTG12 va en 0%"). Es solo
 un aviso: en terreno a veces se adelanta a proposito.
 
+## Parte diario
+
+El boton **📄** sobre el plano arma el informe de un dia. Se elige la fecha
+arriba y la hoja se rehace sola. Trae:
+
+- **Cuatro cifras de cabecera**: avance de obra, lo ejecutado ese dia, el
+  termino programado y el **termino proyectado** al ritmo real, con los dias de
+  atraso o adelanto.
+- **El plano** con lo ejecutado en verde y lo pendiente en rojo a esa fecha,
+  dibujado en claro para que se imprima bien.
+- **La curva de avance**: lo programado punteado, lo real en verde hasta el dia
+  del parte, y una marca en esa fecha.
+- **Ejecutado el dia**: que tramo, cuantos metros y cuanta cantidad en la unidad
+  de su actividad (m³, metros de conductor…).
+- **Programado para el dia siguiente**: los tramos que el programa pone en
+  ejecucion, marcando cual *arranca*, cual *sigue en curso* y cual *termina*.
+- **Rendimiento real contra el programado** por actividad, lo que queda por
+  ejecutar y en que fecha terminaria cada una a ese ritmo.
+- **Recursos en obra** ese dia, con sus horas, combustible y costo.
+
+Dos botones: **Imprimir / PDF**, que en el iPad sale por *Compartir → Imprimir*,
+y **Descargar**, que guarda un `.html` con todo dentro —el plano y la curva
+quedan como imagenes— que se abre en cualquier navegador y se puede mandar por
+correo sin que el otro necesite la aplicacion.
+
+El rendimiento real es lo ejecutado repartido entre los dias en que **hubo**
+avance, no entre los dias del calendario: un equipo que trabajo tres dias de
+los cinco de la semana no aparece rindiendo menos por los dias que no estuvo.
+
 ## Linea de tiempo
 
 El boton 🕑 sobre el plano abre un cursor de fechas que reconstruye la obra en
@@ -378,6 +410,7 @@ En *Settings → Pages* del repositorio, elegir la rama `main` y la carpeta `/`
 ```
 index.html              pantalla inicial, visor, panel y dialogos
 css/app.css             estilos (escritorio y tactil)
+css/report.css          hoja clara del parte diario, en pantalla y al imprimir
 js/dxf.js               lector DXF y armado de la escena
 js/scene.js             indice espacial, seleccion y medidas
 js/viewer.js            lienzo, camara y gestos
@@ -391,6 +424,7 @@ js/timeline.js          estado de la obra en una fecha y curva de avance
 js/activities.js        actividades que agrupan las tareas y su avance
 js/schedule.js          programa maestro: rendimientos, fechas por tramo y ruta critica
 js/overlap.js           que tramos van por el mismo lugar (zanjas compartidas)
+js/report.js            parte diario: lo del dia, rendimiento real y proyeccion
 js/app.js               union de todo y logica de pantalla
 sw.js                   service worker (uso sin conexion)
 manifest.webmanifest    instalacion como aplicacion

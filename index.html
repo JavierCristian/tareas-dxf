@@ -14,6 +14,7 @@
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/report.css">
 </head>
 <body>
 
@@ -80,6 +81,7 @@
                 <button class="tool" id="btn-zoom-out" aria-label="Alejar">−</button>
                 <button class="tool" id="btn-multi" aria-label="Seleccion multiple" title="Seleccion multiple">⧉</button>
                 <button class="tool" id="btn-timeline" aria-label="Linea de tiempo" title="Linea de tiempo">🕑</button>
+                <button class="tool" id="btn-report" aria-label="Parte diario" title="Parte diario">📄</button>
             </div>
 
             <div id="pick-banner" class="pick-banner hidden">
@@ -229,6 +231,22 @@
             </section>
         </aside>
     </main>
+</div>
+
+<!-- ------------------------------ Parte diario ------------------------------ -->
+<div id="report" class="report hidden" role="dialog" aria-modal="true" aria-label="Parte diario">
+    <header class="report-bar">
+        <strong>Parte diario</strong>
+        <input type="date" id="report-date" aria-label="Fecha del parte">
+        <button class="ghost small" id="btn-report-today">Hoy</button>
+        <span class="grow"></span>
+        <button class="ghost small" id="btn-report-print">Imprimir / PDF</button>
+        <button class="ghost small" id="btn-report-download">Descargar</button>
+        <button class="icon-btn" id="btn-report-close" aria-label="Cerrar">✕</button>
+    </header>
+    <div class="report-scroll">
+        <article class="report-sheet" id="report-sheet"></article>
+    </div>
 </div>
 
 <!-- ------------------------------ Dialogo de capas ------------------------------ -->

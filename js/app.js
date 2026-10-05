@@ -46,10 +46,11 @@ import {
     applyEdits, makeEdit, removeEdit, editOfShape, canSplit, splitOpen, splitClosed,
     equalCuts, projectOnPath, pathLength, sliceRange, chain, joinTolerance, MIN_PART_RATIO
 } from './edits.js';
+import { dayReport } from './report.js';
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '13';
+export const APP_VERSION = '14';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -70,6 +71,7 @@ const state = {
     activeActivity: null,   // actividad resaltada en el plano
     schedule: null,         // ultimo programa calculado (tramo a tramo)
     scheduleClosed: new Set(), // actividades plegadas en la pestaña Programa
+    reportDate: null,       // fecha del parte diario que se esta mirando
     selection: [],          // ids de figuras
     multi: false,
     filters: { text: '', status: 'todas', layer: 'todas', resource: 'todas' },
@@ -118,6 +120,7 @@ function init() {
     wireActivities();
     wireSchedule();
     wireBulk();
+    wireReport();
     wireSplitModal();
 
     refreshRecent();
@@ -2746,9 +2749,25 @@ async function submitAdvance() {
  */
 function continueFrom(spans, total, fromStart) {
     if (!spans.length) return fromStart ? 0 : total;
-    if (fromStart) return spans[0].from <= 1e-9 ? spans[0].to : 0;
+    // Lo ejecutado puede venir en varios trozos pegados, uno por dia: hay que
+    // recorrer la racha completa para no volver a empezar en medio de ella.
+    if (fromStart) {
+        if (spans[0].from > 1e-9) return 0;
+        let end = spans[0].to;
+        for (let i = 1; i < spans.length; i++) {
+            if (spans[i].from > end + 1e-9) break;
+            end = Math.max(end, spans[i].to);
+        }
+        return end;
+    }
     const last = spans[spans.length - 1];
-    return last.to >= total - 1e-9 ? last.from : total;
+    if (last.to < total - 1e-9) return total;
+    let start = last.from;
+    for (let i = spans.length - 2; i >= 0; i--) {
+        if (spans[i].to < start - 1e-9) break;
+        start = Math.min(start, spans[i].from);
+    }
+    return start;
 }
 
 /** Marca (o completa) el tramo entero dentro de una actividad. */
@@ -3017,6 +3036,491 @@ function wireTimeline() {
         setTimelineDate(addDays(state.timeline.from, Number(e.target.value)));
     });
     window.addEventListener('resize', () => { if (timelineActive()) drawCurve(); });
+}
+
+/* ------------------------------------------------------------------ */
+/* Parte diario                                                        */
+/* ------------------------------------------------------------------ */
+
+let reportViewer = null;
+
+/** Tema claro para el plano del informe: se imprime en papel blanco. */
+const REPORT_THEME = {
+    background: '#ffffff',
+    grid: 'rgba(15, 23, 42, 0.07)',
+    defaultStroke: '#334155',
+    selection: '#ffcc33',
+    hover: '#7fd1ff',
+    text: '#475569'
+};
+
+function reportActive() {
+    return !$('#report').classList.contains('hidden');
+}
+
+function openReport(date) {
+    if (!state.project) return;
+    state.reportDate = date || state.reportDate || todayDate();
+    $('#report-date').value = state.reportDate;
+    $('#report').classList.remove('hidden');
+    $('#btn-report').classList.add('active');
+    renderReport();
+}
+
+function closeReport() {
+    $('#report').classList.add('hidden');
+    $('#btn-report').classList.remove('active');
+}
+
+/** Numero con separador de miles y la cantidad justa de decimales. */
+function reportNumber(value, unit) {
+    if (!Number.isFinite(value)) return '—';
+    const decimals = Math.abs(value) >= 100 ? 0 : (Math.abs(value) >= 10 ? 1 : 2);
+    return value.toLocaleString('es-CL', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+        + (unit ? ` ${unit}` : '');
+}
+
+function cell(text, className) {
+    const td = document.createElement('td');
+    if (className) td.className = className;
+    td.textContent = text;
+    return td;
+}
+
+/** Tabla con encabezado; las filas las pone quien llama. */
+function reportTable(headers) {
+    const table = document.createElement('table');
+    const head = document.createElement('tr');
+    for (const header of headers) {
+        const th = document.createElement('th');
+        if (typeof header === 'object') {
+            th.textContent = header.text;
+            if (header.num) th.className = 'num';
+        } else th.textContent = header;
+        head.append(th);
+    }
+    const thead = document.createElement('thead');
+    thead.append(head);
+    const body = document.createElement('tbody');
+    table.append(thead, body);
+    return { table, body };
+}
+
+function section(sheet, title) {
+    const h2 = document.createElement('h2');
+    h2.textContent = title;
+    sheet.append(h2);
+    return h2;
+}
+
+function emptyLine(sheet, text) {
+    const p = document.createElement('p');
+    p.className = 'report-empty';
+    p.textContent = text;
+    sheet.append(p);
+}
+
+/** Arma el informe del dia elegido y lo escribe en la hoja. */
+function renderReport() {
+    const sheet = $('#report-sheet');
+    if (!sheet || !state.project) return;
+    const date = state.reportDate;
+    const context = {
+        project: state.project,
+        activities: state.activities,
+        tasks: state.tasks,
+        resources: state.resources,
+        shapesById: state.shapesById,
+        metersPerUnit: state.unitScale,
+        schedule: schedulePlan(),
+        calendar: scheduleCalendarId()
+    };
+    const report = dayReport(context, date);
+    const units = state.project.units === 'sin unidad' ? 'm' : state.project.units;
+    sheet.innerHTML = '';
+
+    /* --- Encabezado --- */
+    const head = document.createElement('header');
+    head.className = 'report-head';
+    head.innerHTML = `
+        <div class="grow">
+            <h1></h1>
+            <div class="report-sub"></div>
+        </div>
+        <div class="when"><span>Parte diario</span><strong></strong></div>`;
+    head.querySelector('h1').textContent = state.project.name;
+    head.querySelector('.report-sub').textContent =
+        `${state.shapes.length} elementos · ${state.activities.length} actividades · ${state.tasks.length} tramos`;
+    head.querySelector('.when strong').textContent = report.dateLabel;
+    sheet.append(head);
+
+    /* --- Tarjetas de resumen --- */
+    const cards = document.createElement('div');
+    cards.className = 'report-cards';
+    const card = (label, value, detail, tone) => {
+        const box = document.createElement('div');
+        box.className = 'report-card' + (tone ? ` ${tone}` : '');
+        box.innerHTML = '<span></span><strong></strong><small></small>';
+        box.querySelector('span').textContent = label;
+        box.querySelector('strong').textContent = value;
+        box.querySelector('small').textContent = detail || '';
+        cards.append(box);
+    };
+
+    const hoy = report.executed.reduce((sum, row) => sum + row.meters, 0);
+    card('Avance de obra', `${Math.round(report.progress.pct)}%`,
+        `${reportNumber(report.progress.done, units)} de ${reportNumber(report.progress.total, units)}`);
+    card('Ejecutado el dia', reportNumber(hoy, units),
+        report.executed.length ? `${report.executed.length} tramo(s)` : 'sin avance registrado');
+    card('Termino programado', report.forecast.plannedEnd ? formatDate(report.forecast.plannedEnd) : '—',
+        'segun el programa maestro');
+    const late = report.forecast.late;
+    card('Termino proyectado', report.forecast.end ? formatDate(report.forecast.end) : '—',
+        late === null ? 'falta avance para proyectar'
+            : (late > 0 ? `${late} dia(s) de atraso` : `${Math.abs(late)} dia(s) de adelanto`),
+        late === null ? '' : (late > 0 ? 'bad' : 'good'));
+    sheet.append(cards);
+
+    /* --- Plano --- */
+    section(sheet, 'Estado de la obra en el plano');
+    const figure = document.createElement('figure');
+    figure.className = 'report-figure';
+    const canvas = document.createElement('canvas');
+    canvas.className = 'report-map';
+    canvas.id = 'report-map';
+    figure.append(canvas);
+    const legend = document.createElement('div');
+    legend.className = 'report-legend';
+    legend.innerHTML = `<span><i style="background:${DONE_COLOR}"></i>Ejecutado</span>`
+        + `<span><i style="background:${PENDING_COLOR}"></i>Pendiente</span>`;
+    figure.append(legend);
+    sheet.append(figure);
+
+    /* --- Curva S --- */
+    section(sheet, 'Curva de avance');
+    const curveFigure = document.createElement('figure');
+    curveFigure.className = 'report-figure';
+    const curve = document.createElement('canvas');
+    curve.className = 'report-curve';
+    curve.id = 'report-curve';
+    curveFigure.append(curve);
+    const curveLegend = document.createElement('div');
+    curveLegend.className = 'report-legend';
+    curveLegend.innerHTML = '<span><i style="background:#16a34a"></i>Avance real</span>'
+        + '<span><i style="background:#94a3b8"></i>Avance programado</span>'
+        + '<span><i style="background:#2563eb"></i>Fecha del parte</span>';
+    curveFigure.append(curveLegend);
+    sheet.append(curveFigure);
+
+    /* --- Ejecutado el dia --- */
+    section(sheet, `Ejecutado el ${report.dateLabel}`);
+    if (!report.executed.length) {
+        emptyLine(sheet, 'No se registro avance en esta fecha.');
+    } else {
+        const { table, body } = reportTable([
+            'Actividad', 'Tramo',
+            { text: `Avance (${units})`, num: true }, { text: 'Cantidad', num: true }, { text: 'Tramo al', num: true }
+        ]);
+        for (const row of report.executed) {
+            const tr = document.createElement('tr');
+            tr.append(
+                cell(row.activity.name),
+                cell(row.task.title || '(sin titulo)'),
+                cell(reportNumber(row.meters), 'num'),
+                cell(reportNumber(row.amount, row.unit), 'num'),
+                cell(`${row.progress}%`, 'num')
+            );
+            body.append(tr);
+        }
+        sheet.append(table);
+    }
+
+    /* --- Programado para el dia siguiente --- */
+    section(sheet, `Programado para el ${report.nextLabel}`);
+    if (!report.tomorrow.length) {
+        emptyLine(sheet, 'El programa no pone ningun tramo en ejecucion ese dia.');
+    } else {
+        const { table, body } = reportTable([
+            'Actividad', 'Tramo', 'Estado', { text: 'Periodo programado', num: true }, { text: 'Avance', num: true }
+        ]);
+        for (const row of report.tomorrow) {
+            const tr = document.createElement('tr');
+            const flag = document.createElement('span');
+            flag.className = 'report-flag ' + (row.starts ? 'on' : 'off');
+            flag.textContent = row.starts ? 'ARRANCA' : (row.ends ? 'TERMINA' : 'EN CURSO');
+            const estado = document.createElement('td');
+            estado.append(flag);
+            tr.append(
+                cell(row.activity ? row.activity.name : ''),
+                cell(row.task.title || '(sin titulo)'),
+                estado,
+                cell(`${formatDate(row.entry.start)} a ${formatDate(row.entry.end)}`, 'num'),
+                cell(`${row.progress}%`, 'num')
+            );
+            body.append(tr);
+        }
+        sheet.append(table);
+    }
+
+    /* --- Rendimiento real y proyeccion --- */
+    section(sheet, 'Rendimiento real y proyeccion');
+    if (!report.rates.length) {
+        emptyLine(sheet, 'Todavia no hay actividades con tramos.');
+    } else {
+        const { table, body } = reportTable([
+            'Actividad',
+            { text: 'Programado', num: true }, { text: 'Real', num: true }, { text: 'Cumple', num: true },
+            { text: 'Pendiente', num: true }, { text: 'Termina', num: true }
+        ]);
+        for (const rate of report.rates) {
+            const tr = document.createElement('tr');
+            if (rate.late > 0) tr.className = 'late';
+            const cumple = rate.ratio === null ? '—' : `${Math.round(rate.ratio * 100)}%`;
+            let termina = '—';
+            if (rate.finished) termina = 'terminada';
+            else if (rate.end) {
+                termina = formatDate(rate.end);
+                if (rate.late > 0) termina += ` (+${rate.late} d)`;
+                else if (rate.late < 0) termina += ` (−${Math.abs(rate.late)} d)`;
+            }
+            tr.append(
+                cell(rate.activity.name),
+                cell(rate.planned > 0 ? reportNumber(rate.planned, `${rate.unit}/dia`) : '—', 'num'),
+                cell(rate.days ? reportNumber(rate.perDay, `${rate.unit}/dia`) : '—', 'num'),
+                cell(cumple, 'num'),
+                cell(reportNumber(rate.remaining, rate.unit), 'num'),
+                cell(termina, 'num')
+            );
+            body.append(tr);
+        }
+        sheet.append(table);
+        const note = document.createElement('p');
+        note.className = 'report-sub';
+        note.textContent = 'El rendimiento real es lo ejecutado repartido en los dias en que hubo avance. '
+            + 'El programado incluye los frentes de cada actividad.';
+        sheet.append(note);
+    }
+
+    /* --- Recursos en obra --- */
+    section(sheet, 'Recursos en obra');
+    if (!report.resources.rows.length) {
+        emptyLine(sheet, 'Ningun recurso asignado a los tramos con avance de esta fecha.');
+    } else {
+        const { table, body } = reportTable([
+            'Recurso', 'Cargo o modelo', 'Tramos',
+            { text: 'Horas', num: true }, { text: 'Combustible', num: true }, { text: 'Costo', num: true }
+        ]);
+        for (const row of report.resources.rows) {
+            const resource = row.resource;
+            const spend = spendOf([resource], 1);
+            const tr = document.createElement('tr');
+            tr.append(
+                cell(`${typeOf(resource.type).icon} ${resource.name}`),
+                cell(resource.role || resource.brand || ''),
+                cell(row.tasks.map((t) => t.title).join(', ')),
+                cell(reportNumber(spend.hours, 'h'), 'num'),
+                cell(spend.fuel > 0 ? reportNumber(spend.fuel, 'L') : '—', 'num'),
+                cell(spend.cost > 0 ? formatMoney(spend.cost) : '—', 'num')
+            );
+            body.append(tr);
+        }
+        const total = document.createElement('tr');
+        total.innerHTML = '<td colspan="3"><strong>Total del dia</strong></td>';
+        total.append(
+            cell(reportNumber(report.resources.spend.hours, 'h'), 'num'),
+            cell(report.resources.spend.fuel > 0 ? reportNumber(report.resources.spend.fuel, 'L') : '—', 'num'),
+            cell(report.resources.spend.cost > 0 ? formatMoney(report.resources.spend.cost) : '—', 'num')
+        );
+        body.append(total);
+        sheet.append(table);
+    }
+
+    /* --- Pie --- */
+    const foot = document.createElement('p');
+    foot.className = 'report-foot';
+    foot.textContent = `Emitido el ${formatDate(todayDate())} desde Tareas DXF ${APP_VERSION}. `
+        + 'Las cantidades salen del plano y del avance registrado en terreno.';
+    sheet.append(foot);
+
+    drawReportMap(date);
+    drawReportCurve(report);
+}
+
+/** Dibuja el plano del informe con el avance a esa fecha, en tema claro. */
+function drawReportMap(date) {
+    const canvas = $('#report-map');
+    if (!canvas || !state.shapes.length) return;
+    if (!reportViewer || reportViewer.canvas !== canvas) {
+        reportViewer = new Viewer(canvas, {});
+        reportViewer.theme = { ...reportViewer.theme, ...REPORT_THEME };
+    }
+    reportViewer.setScene(state.shapes, state.sceneBounds);
+    reportViewer.setLayerState(new Map([...state.layers].map(([name, layer]) =>
+        [name, { visible: layer.visible, color: layer.color }])));
+
+    const overlays = [];
+    for (const task of state.tasks) overlays.push(...overlaysForTask(task, date));
+    reportViewer.setTaskHighlight(overlays, true);
+    reportViewer.resize();
+    reportViewer.zoomToFit(state.sceneBounds);
+    reportViewer.render();
+}
+
+/**
+ * Curva de avance acumulado, real contra programada, con una marca en la fecha
+ * del parte. Es la misma informacion del cursor de tiempo, en grande.
+ */
+function drawReportCurve(report) {
+    const canvas = $('#report-curve');
+    if (!canvas) return;
+    const tasks = scheduledTasks();
+    const range = projectRange(tasks, state.places);
+    const ctx = canvas.getContext('2d');
+    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    const width = canvas.clientWidth || 760;
+    const height = canvas.clientHeight || 220;
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    if (!range) return;
+
+    const points = progressCurve(tasks, state.shapesById, range, state.unitScale, 200);
+    if (points.length < 2) return;
+
+    const padLeft = 44;   // cabe "100%" sin recortarse
+    const padRight = 12;
+    const padTop = 12;
+    const padBottom = 26;
+    const x = (iso) => padLeft + (daysBetween(range.from, iso) / Math.max(1, range.days)) * (width - padLeft - padRight);
+    const y = (pct) => height - padBottom - (Math.max(0, Math.min(100, pct)) / 100) * (height - padTop - padBottom);
+
+    // Rejilla y porcentajes.
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.fillStyle = '#64748b';
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.lineWidth = 1;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (const pct of [0, 25, 50, 75, 100]) {
+        ctx.beginPath();
+        ctx.moveTo(padLeft, y(pct));
+        ctx.lineTo(width - padRight, y(pct));
+        ctx.stroke();
+        ctx.fillText(`${pct}%`, padLeft - 6, y(pct));
+    }
+
+    // Fechas en el eje: principio, fecha del parte y final.
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (const iso of [range.from, range.to]) {
+        ctx.fillText(formatDate(iso), Math.max(padLeft + 24, Math.min(width - padRight - 24, x(iso))), height - padBottom + 7);
+    }
+
+    // Programado: linea punteada.
+    if (points.some((p) => p.planned !== null)) {
+        ctx.save();
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = '#94a3b8';
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        let started = false;
+        for (const point of points) {
+            if (point.planned === null) continue;
+            const px = x(point.date);
+            const py = y(point.planned);
+            if (started) ctx.lineTo(px, py); else { ctx.moveTo(px, py); started = true; }
+        }
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // Real: solo hasta la fecha del parte, que es lo que se sabe.
+    ctx.strokeStyle = '#16a34a';
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    let started = false;
+    for (const point of points) {
+        if (point.date > report.date) break;
+        const px = x(point.date);
+        const py = y(point.real);
+        if (started) ctx.lineTo(px, py); else { ctx.moveTo(px, py); started = true; }
+    }
+    ctx.stroke();
+
+    // Marca de la fecha del parte.
+    if (report.date >= range.from && report.date <= range.to) {
+        const cx = x(report.date);
+        ctx.strokeStyle = '#2563eb';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(cx, padTop);
+        ctx.lineTo(cx, height - padBottom);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#2563eb';
+        ctx.beginPath();
+        ctx.arc(cx, y(report.progress.pct), 4, 0, Math.PI * 2);
+        ctx.fill();
+    }
+}
+
+/**
+ * Guarda el informe como un .html que se abre en cualquier parte: los dos
+ * lienzos se convierten en imagenes y los estilos van dentro del archivo.
+ */
+async function downloadReport() {
+    const sheet = $('#report-sheet');
+    if (!sheet) return;
+    const clone = sheet.cloneNode(true);
+    const originals = sheet.querySelectorAll('canvas');
+    const copies = clone.querySelectorAll('canvas');
+    for (let i = 0; i < copies.length; i++) {
+        const image = document.createElement('img');
+        image.src = originals[i].toDataURL('image/png');
+        image.className = originals[i].className;
+        copies[i].replaceWith(image);
+    }
+
+    let css = '';
+    try {
+        const response = await fetch('css/report.css');
+        if (response.ok) css = await response.text();
+    } catch (error) {
+        console.warn('No se pudo incluir la hoja de estilos del informe:', error);
+    }
+
+    const title = `Parte diario ${state.project.name} ${state.reportDate}`;
+    const html = `<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title}</title>
+<style>
+body { margin: 0; padding: 16px; background: #f1f3f6; font: 13.5px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+${css}
+</style></head>
+<body>${clone.outerHTML}</body></html>`;
+
+    download(`${state.project.name}-parte-${state.reportDate}.html`, html, 'text/html;charset=utf-8');
+    toast('Informe descargado: se abre en cualquier navegador y se puede enviar por correo.');
+}
+
+function wireReport() {
+    $('#btn-report').addEventListener('click', () => {
+        if (reportActive()) closeReport(); else openReport();
+    });
+    $('#btn-report-close').addEventListener('click', closeReport);
+    $('#btn-report-today').addEventListener('click', () => openReport(todayDate()));
+    $('#report-date').addEventListener('change', (e) => {
+        state.reportDate = e.target.value || todayDate();
+        renderReport();
+    });
+    $('#btn-report-print').addEventListener('click', () => window.print());
+    $('#btn-report-download').addEventListener('click', downloadReport);
+    window.addEventListener('resize', () => { if (reportActive()) renderReport(); });
 }
 
 /* ------------------------------------------------------------------ */
