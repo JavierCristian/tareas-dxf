@@ -494,8 +494,18 @@ export function computeSchedule(activities, tasks, options = {}) {
      * que YA puede partir antes, con las fechas reales de sus antecesores, no
      * con las teoricas: si la excavacion de un trecho termino primero, es ese
      * trecho el que se lleva la cuadrilla de tendido.
+     *
+     * Entre tramos que pueden partir el mismo dia manda el orden que les dio el
+     * usuario dentro de su actividad: es lo que le permite decir por que sector
+     * empieza la obra. En la excavacion, que no espera a nadie, todos los
+     * tramos pueden partir el primer dia y ese orden decide entero; mas abajo
+     * en la cadena se hereda solo, porque cada tramo sigue al suyo.
      */
-    const rank = new Map(order.map((id, i) => [id, i]));
+    const topo = new Map(order.map((id, i) => [id, i]));
+    const rank = (id) => {
+        const own = nodeById.get(id);
+        return Number.isFinite(own && own.order) ? own.order : topo.get(id);
+    };
     const crewsByActivity = new Map();
     const remaining = new Set(order);
 
@@ -519,7 +529,9 @@ export function computeSchedule(activities, tasks, options = {}) {
             // Todavia le falta algun antecesor por programar.
             if (plan.get(id).links.some((link) => remaining.has(link.id))) continue;
             const when = readyDate(nodeById.get(id));
-            if (!chosen || when < chosenDate || (when === chosenDate && rank.get(id) < rank.get(chosen))) {
+            if (!chosen || when < chosenDate
+                || (when === chosenDate && rank(id) < rank(chosen))
+                || (when === chosenDate && rank(id) === rank(chosen) && topo.get(id) < topo.get(chosen))) {
                 chosen = id;
                 chosenDate = when;
             }

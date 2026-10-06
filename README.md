@@ -146,6 +146,23 @@ zanja en lugar de esperarla. Esas actividades se muestran como *"Va despues de
 El desfase en dias de cada enlace tambien se conserva: un tapado que empieza
 tres dias despues del tendido lo sigue haciendo aunque cambie de posicion.
 
+### El orden de los tramos dentro de una actividad
+
+Dentro de cada actividad, los tramos se arrastran igual, y ese orden es **en
+que orden se ejecutan**: es la forma de decir "partimos por este sector y
+despues por el otro". Se puede hacer desde la lista de tramos de la actividad,
+en *Tareas*, o desde el programa.
+
+Entre tramos que ya pueden partir, el programa toma siempre el que este mas
+arriba. En la excavacion, que no espera a nadie, todos pueden partir el primer
+dia y ese orden manda entero. Mas abajo en la cadena se hereda solo, porque
+cada tramo espera al suyo: si la zanja se excavo por un sector, el tendido de
+ese sector es el que queda libre primero.
+
+Lo que no hace es dejar una cuadrilla parada. Si el siguiente de la lista
+todavia espera a su antecesor y hay otro listo, se toma ese: el orden es una
+preferencia, no una cola rigida.
+
 ## Actividades y sus tramos
 
 La obra se organiza en dos niveles, como se lleva en terreno:

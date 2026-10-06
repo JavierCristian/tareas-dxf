@@ -54,8 +54,35 @@ export function activityOf(task, activities) {
     return activities.find((activity) => activity.id === task.activityId) || null;
 }
 
+/**
+ * Tramos de una actividad, en el orden en que se atacan. Ese orden lo decide el
+ * usuario arrastrando: puede querer empezar por un sector y seguir por otro.
+ */
 export function tasksOf(activityId, tasks) {
-    return tasks.filter((task) => task.activityId === activityId);
+    return tasks
+        .filter((task) => task.activityId === activityId)
+        .sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0));
+}
+
+/** Lleva un tramo a otra posicion dentro de su actividad. */
+export function reorderTasks(activityId, tasks, id, target) {
+    const own = tasksOf(activityId, tasks);
+    const index = own.findIndex((t) => t.id === id);
+    if (index < 0 || target < 0 || target >= own.length || index === target) return null;
+    const [moved] = own.splice(index, 1);
+    own.splice(target, 0, moved);
+    const now = Date.now();
+    own.forEach((task, i) => {
+        if (task.order !== i) { task.order = i; task.updatedAt = now; }
+    });
+    return own;
+}
+
+/** Numera los tramos de una actividad que todavia no traen posicion. */
+export function numberTasks(activityId, tasks) {
+    const own = tasksOf(activityId, tasks);
+    own.forEach((task, i) => { task.order = i; });
+    return own;
 }
 
 /** Tareas que todavia no pertenecen a ninguna actividad. */

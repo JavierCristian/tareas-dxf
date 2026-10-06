@@ -40,6 +40,7 @@ export function createTask(projectId, patch = {}) {
         start: '',      // inicio planificado (YYYY-MM-DD)
         due: '',        // termino planificado
         activityId: null,  // actividad a la que pertenece (excavacion, tendido...)
+        order: 0,          // en que orden se ataca dentro de su actividad
         duration: null,    // dias fijos; si no, salen del rendimiento
         ternas: 1,         // ternas o triadas del tramo (cable de potencia)
         predecessors: [],  // tramos previos, cuando se enlazan a mano

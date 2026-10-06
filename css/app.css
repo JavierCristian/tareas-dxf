@@ -749,7 +749,19 @@ textarea { resize: vertical; }
 }
 .activity-head:hover { background: rgba(255, 255, 255, 0.03); }
 .activity-group.on .activity-head { background: var(--accent-soft); }
-.activity-caret { color: var(--muted); font-size: 12px; width: 14px; }
+/* El triangulo es el que despliega los tramos: necesita area para el dedo. */
+.activity-caret {
+    color: var(--muted);
+    font-size: 12px;
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    margin: -4px 0 -4px -5px;
+}
+.activity-caret:hover { color: var(--text); background: rgba(148, 163, 184, .14); }
 .activity-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .activity-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 .activity-name strong { font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1076,9 +1088,14 @@ textarea { resize: vertical; }
 
 /* ---------------------- Arrastrar para ordenar la obra -------------------- */
 
-.activity-group, .schedule-row { position: relative; }
+.activity-group, .schedule-row, .tramo-row { position: relative; }
 .activity-group.has-drag .activity-head { padding-right: 34px; }
 .schedule-row.has-drag .schedule-top { padding-right: 24px; }
+.tramo-row .tramo-top { padding-right: 24px; }
+.tramo-row .drag-handle { top: 4px; right: 2px; width: 22px; height: 22px; font-size: 13px; }
+
+/* En una fila que ya trae botones, el asa va con ellos y no flotando. */
+.drag-handle.inline { position: static; width: 34px; height: 28px; font-size: 16px; }
 
 .drag-handle {
     position: absolute;
@@ -1106,7 +1123,7 @@ textarea { resize: vertical; }
 .task-list.sorting, .schedule-list.sorting { cursor: grabbing; }
 .task-list.sorting .drag-handle, .schedule-list.sorting .drag-handle { cursor: grabbing; }
 
-.activity-group.dragging, .schedule-row.dragging {
+.activity-group.dragging, .schedule-row.dragging, .tramo-row.dragging, .task-item.dragging {
     opacity: .9;
     background: #121c27;
     outline: 2px solid var(--accent);

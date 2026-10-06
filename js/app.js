@@ -31,7 +31,8 @@ import {
 } from './places.js';
 import {
     ACTIVITY_COLORS, createActivity, normalizeActivity, tasksOf, looseTasks,
-    activityProgress, nextTaskName, reorder, reorderTo, relinkChain
+    activityProgress, nextTaskName, reorder, reorderTo, relinkChain,
+    reorderTasks, numberTasks
 } from './activities.js';
 import {
     projectRange, projectStateAt, taskStateAt, progressCurve, addDays, daysBetween,
@@ -54,7 +55,7 @@ import {
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '17';
+export const APP_VERSION = '18';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -349,6 +350,9 @@ function loadIntoApp(project, scene, tasks, resources = [], places = [], activit
     state.activities = activities;
     state.activeActivity = null;
     state.schedule = null;
+    // Los tramos llevan el orden en que se ejecutan; los proyectos de antes no
+    // lo traen, asi que se numeran como estan para poder reordenarlos.
+    for (const activity of activities) numberTasks(activity.id, tasks);
     // El programa se ve entero; solo en obras muy grandes arranca plegado.
     state.scheduleClosed = new Set(tasks.length > 60 ? activities.map((a) => a.id) : []);
     state.selection = [];
@@ -1234,7 +1238,15 @@ function renderActivityGroup(group, shown, nextNumber) {
     head.querySelector('.activity-sub').textContent = sub.join(' · ');
     head.querySelector('.activity-pct').textContent = progress ? `${Math.round(progress.pct)}%` : '';
 
-    // Tocar la cabecera resalta toda la actividad en el plano.
+    // Tocar la cabecera resalta toda la actividad en el plano; el triangulo
+    // despliega sus tramos, que es la unica forma de volver a abrirla cuando la
+    // obra llego plegada por tener cientos de tramos.
+    const caret = head.querySelector('.activity-caret');
+    caret.title = collapsed ? 'Ver sus tramos' : 'Plegar';
+    caret.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleCollapse(activity);
+    });
     head.addEventListener('click', () => {
         if (!activity) return toggleCollapse(null);
         selectActivity(state.activeActivity === activity.id ? null : activity.id);
@@ -1305,6 +1317,7 @@ function renderTaskItem(task, index) {
     const status = statusOf(task.status);
     const item = document.createElement('li');
     item.className = 'task-item';
+    item.dataset.id = task.id;
     item.style.setProperty('--status', status.color);
     item.innerHTML = `
         <div class="task-color"></div>
@@ -1316,6 +1329,11 @@ function renderTaskItem(task, index) {
             <button data-focus title="Ver en el plano" aria-label="Ver en el plano">◎</button>
             <button data-edit title="Editar" aria-label="Editar">✎</button>
         </div>`;
+    // El orden de los tramos es el orden en que se ejecutan: se puede arrastrar
+    // para empezar por un sector y seguir por otro.
+    if (task.activityId) {
+        item.querySelector('.task-actions').append(dragHandle('Arrastra para cambiar en que orden se ejecuta', true));
+    }
     item.querySelector('strong').textContent = `${index}. ${task.title || '(sin titulo)'}`;
     const meta = item.querySelector('.task-meta');
     meta.append(tag(status.label));
@@ -1867,6 +1885,7 @@ async function submitBulk() {
 
     // Se numeran siguiendo lo que ya exista, en el orden en que vienen del plano.
     let number = nextBulkNumber(prefix);
+    let order = tasksOf(activity.id, state.tasks).length;
     const created = [];
     for (const shape of shapes) {
         const ref = elementRef(shape, anchorOf(shape));
@@ -1874,6 +1893,7 @@ async function submitBulk() {
         if (depth) ref.depth = depth;
         const task = createTask(state.project.id, {
             activityId: activity.id,
+            order: order++,
             title: `${prefix} ${number}`,
             status: 'pendiente',
             ternas,
@@ -2201,6 +2221,9 @@ async function runWizard() {
         for (const suggestion of chosen) {
             const activity = byKey.get(suggestion.key);
             const layers = new Set(layersFor(suggestion, classification));
+            // Arrancan en el orden en que vienen del plano; desde ahi se
+            // reordenan arrastrando, para empezar por el sector que convenga.
+            let order = 0;
 
             if (suggestion.target === 'circuito') {
                 for (const name of layers) {
@@ -2209,6 +2232,7 @@ async function runWizard() {
                     const info = tramoOf.get(name);
                     tasks.push(createTask(state.project.id, {
                         activityId: activity.id,
+                        order: order++,
                         title: `${suggestion.name} ${info.circuito.codigo} ${info.tramo}`,
                         // Un circuito es una terna de fases R, S, T.
                         ternas: 1,
@@ -2228,6 +2252,7 @@ async function runWizard() {
                 }
                 tasks.push(createTask(state.project.id, {
                     activityId: activity.id,
+                    order: order++,
                     title: `${suggestion.name} ${trenchNames.get(shape.id) || shape.layer}`,
                     elements: [ref]
                 }));
@@ -2283,17 +2308,20 @@ function wireWizard() {
  * posicion final. Solo arranca desde el asa, para que el resto de la fila siga
  * respondiendo a los toques y el panel se pueda desplazar normalmente.
  */
-function makeSortable(list, itemSelector, onDrop) {
+function makeSortable(root, kinds) {
     let drag = null;
 
-    const indexOf = (item) => [...list.querySelectorAll(itemSelector)].indexOf(item);
+    // Los hermanos son los de su misma lista, no los de todo el panel: dentro de
+    // una actividad se reordenan sus tramos, sin salirse de ella.
+    const siblings = (item, selector) =>
+        [...item.parentElement.children].filter((node) => node.matches(selector));
 
     const move = (e) => {
         if (!drag || e.pointerId !== drag.pointerId) return;
         e.preventDefault();
 
         // Se intercambia con el vecino cuyo centro ya quedo pasado.
-        for (const other of list.querySelectorAll(itemSelector)) {
+        for (const other of siblings(drag.item, drag.selector)) {
             if (other === drag.item) continue;
             const box = other.getBoundingClientRect();
             const middle = box.top + box.height / 2;
@@ -2301,33 +2329,53 @@ function makeSortable(list, itemSelector, onDrop) {
             if (below && e.clientY > middle) other.after(drag.item);
             else if (!below && e.clientY < middle) other.before(drag.item);
         }
-        autoScroll(list, e.clientY);
+        autoScroll(root, e.clientY);
     };
 
     const end = (e) => {
         if (!drag || (e && e.pointerId !== drag.pointerId)) return;
-        const { item, id, from } = drag;
+        const { item, id, from, selector, onDrop } = drag;
         drag = null;
         window.removeEventListener('pointermove', move);
         window.removeEventListener('pointerup', end);
         window.removeEventListener('pointercancel', end);
         item.classList.remove('dragging');
-        list.classList.remove('sorting');
-        const to = indexOf(item);
+        root.classList.remove('sorting');
+        const to = siblings(item, selector).indexOf(item);
         // Aunque no haya cambiado de sitio hay que avisar: la lista quedo
         // movida a mano y solo volver a dibujarla la deja igual al modelo.
         onDrop(id, to >= 0 ? to : from);
     };
 
-    list.addEventListener('pointerdown', (e) => {
+    root.addEventListener('pointerdown', (e) => {
         const handle = e.target.closest('[data-drag]');
-        if (!handle || !list.contains(handle) || e.button > 0) return;
-        const item = handle.closest(itemSelector);
-        if (!item || !item.dataset.id) return;
+        if (!handle || !root.contains(handle) || e.button > 0) return;
+
+        // El primero que calce manda, asi que la lista viene de lo mas anidado a
+        // lo menos: el asa de un tramo no debe mover la actividad entera.
+        let kind = null;
+        let item = null;
+        for (const candidate of kinds) {
+            const found = handle.closest(candidate.item);
+            if (found && root.contains(found) && found.dataset.id) {
+                kind = candidate;
+                item = found;
+                break;
+            }
+        }
+        if (!item) return;
+
         e.preventDefault();
-        drag = { item, id: item.dataset.id, from: indexOf(item), pointerId: e.pointerId };
+        drag = {
+            item,
+            id: item.dataset.id,
+            selector: kind.item,
+            onDrop: kind.onDrop,
+            from: siblings(item, kind.item).indexOf(item),
+            pointerId: e.pointerId
+        };
         item.classList.add('dragging');
-        list.classList.add('sorting');
+        root.classList.add('sorting');
         // Se escucha en la ventana y no en la lista: al mover la fila dentro del
         // DOM el navegador suelta la captura del puntero, y entonces el dedo
         // puede levantarse sobre cualquier otra cosa —o fuera de la pantalla—
@@ -2347,10 +2395,10 @@ function autoScroll(list, y) {
     else if (y > box.bottom - margin) scroller.scrollTop += 12;
 }
 
-/** Asa de arrastre de una actividad. */
-function dragHandle(title) {
+/** Asa de arrastre. En una fila con botones va en linea; si no, flotando. */
+function dragHandle(title, inline = false) {
     const handle = document.createElement('span');
-    handle.className = 'drag-handle';
+    handle.className = 'drag-handle' + (inline ? ' inline' : '');
     handle.dataset.drag = '';
     handle.textContent = '⠿';
     handle.title = title;
@@ -2359,8 +2407,30 @@ function dragHandle(title) {
 }
 
 function wireSortable() {
-    makeSortable($('#task-list'), '.activity-group', dropActivity);
-    makeSortable($('#schedule-list'), '.schedule-row', dropActivity);
+    // De lo mas anidado a lo menos: primero el tramo, despues su actividad.
+    makeSortable($('#task-list'), [
+        { item: '.task-item', onDrop: dropTask },
+        { item: '.activity-group', onDrop: dropActivity }
+    ]);
+    makeSortable($('#schedule-list'), [
+        { item: '.tramo-row', onDrop: dropTask },
+        { item: '.schedule-row', onDrop: dropActivity }
+    ]);
+}
+
+/**
+ * Cambia el orden en que se ataca un tramo dentro de su actividad. Es lo que
+ * permite decir "esta semana partimos por este sector y despues por el otro":
+ * entre tramos que pueden empezar el mismo dia, el programa sigue este orden.
+ */
+async function dropTask(id, target) {
+    const task = taskById(id);
+    if (!task || !task.activityId) return renderAll();
+    const sorted = reorderTasks(task.activityId, state.tasks, id, target);
+    if (sorted) await saveTasks(sorted);
+    state.schedule = null;
+    renderTasks();
+    renderSchedule();
 }
 
 async function moveActivity(id, delta) {
@@ -2860,14 +2930,9 @@ function renderProgramActivity(activity, schedule, span) {
 
     const tramos = document.createElement('ul');
     tramos.className = 'tramo-list';
-    const own = tasksOf(activity.id, state.tasks)
-        .slice()
-        .sort((a, b) => {
-            const ea = schedule.tasks.get(a.id);
-            const eb = schedule.tasks.get(b.id);
-            if (!ea || !eb) return 0;
-            return ea.start < eb.start ? -1 : (ea.start > eb.start ? 1 : 0);
-        });
+    // En el orden en que se ejecutan, que es el que se puede arrastrar. Antes
+    // se ordenaban por fecha, pero esa fecha ya sale de este mismo orden.
+    const own = tasksOf(activity.id, state.tasks);
     for (const task of own) tramos.append(renderProgramTask(task, activity, schedule, span));
     if (!own.length) {
         const empty = document.createElement('li');
@@ -2884,6 +2949,8 @@ function renderProgramTask(task, activity, schedule, span) {
     const entry = schedule.tasks.get(task.id);
     const row = document.createElement('li');
     row.className = 'tramo-row' + (entry && entry.critical ? ' critical' : '');
+    row.dataset.id = task.id;
+    row.append(dragHandle('Arrastra para cambiar en que orden se ejecuta'));
 
     const top = document.createElement('div');
     top.className = 'tramo-top';
