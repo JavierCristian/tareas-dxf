@@ -24,7 +24,8 @@ export function createActivity(projectId, patch = {}) {
         order: 0,
         color: ACTIVITY_COLORS[0],
         rate: { unit: 'ml', value: 0 },  // rendimiento: cuanto se avanza por dia
-        crews: 1,            // frentes: cuantos tramos se atacan a la vez
+        crews: 1,            // frentes a mano, si no hay recursos asignados
+        resources: [],       // maquinaria y personal de la actividad: de aqui salen los frentes
         duration: null,      // dias por tramo si no hay rendimiento (compatibilidad)
         predecessors: [],    // ids de actividades previas (programa maestro)
         linksAuto: true,     // false = sus antecesoras las maneja el usuario

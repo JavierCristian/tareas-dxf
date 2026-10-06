@@ -40,7 +40,7 @@ import {
 } from './timeline.js';
 import {
     CALENDARS, calendarOf, computeSchedule, workdaysBetween, taskDates, taskLinks,
-    unfinishedPredecessors, RATE_UNITS, rateUnitOf, rateOf, crewsOf, ternasOf, taskAmount,
+    unfinishedPredecessors, RATE_UNITS, rateUnitOf, rateOf, crewsOf, frontsOf, ternasOf, taskAmount,
     ACTIVITY_SCOPES, scopeOf, neighbourhood, DEFAULT_SHARE_TOLERANCE
 } from './schedule.js';
 import {
@@ -55,7 +55,7 @@ import {
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '18';
+export const APP_VERSION = '19';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -2555,14 +2555,18 @@ function shareTolerance() {
  */
 function schedulePlan() {
     if (!state.project) {
-        return { tasks: new Map(), activities: new Map(), cycle: [], orphans: [], from: todayDate(), to: todayDate() };
+        return {
+            tasks: new Map(), activities: new Map(), cycle: [], orphans: [],
+            duplicates: [], clashes: [], from: todayDate(), to: todayDate()
+        };
     }
     state.schedule = computeSchedule(state.activities, state.tasks, {
         start: state.project.scheduleStart || '',
         calendar: scheduleCalendarId(),
         shapesById: state.shapesById,
         metersPerUnit: state.unitScale,
-        shareTolerance: shareTolerance()
+        shareTolerance: shareTolerance(),
+        resources: state.resources
     });
     return state.schedule;
 }
@@ -2660,6 +2664,15 @@ function renderProgram(schedule) {
         avisos.push(`Su actividad antecesora no pasa por aqui: ${names.join(', ')}. `
             + 'Se enlazaron a la actividad anterior de la cadena que si pasa, pero suele ser '
             + `una zanja sin su circuito dibujado. Sube la tolerancia si las trazas corren a mas de ${shareTolerance()} m, o enlazalos a mano.`);
+    }
+    // Una maquina no puede estar en dos frentes a la vez: si se le asigno a dos
+    // actividades que se pisan, el programa sale optimista y nadie lo nota.
+    for (const clash of (schedule.clashes || []).slice(0, 6)) {
+        avisos.push(`${clash.resource.name} esta en "${clash.a.label}" y en "${clash.b.label}" `
+            + `del ${shortDate(clash.from)} al ${shortDate(clash.to)}.`);
+    }
+    if ((schedule.clashes || []).length > 6) {
+        avisos.push(`Y ${schedule.clashes.length - 6} choque(s) mas de agenda.`);
     }
     warning.hidden = !avisos.length;
     warning.textContent = avisos.join(' ');
@@ -3133,6 +3146,10 @@ function renderRateRow(activity, schedule) {
                 <select class="rate-scope"></select>
             </label>
         </div>
+        <div class="rate-crew">
+            <div class="linked-head"><strong>Maquinaria y personal</strong><span class="rate-fronts muted"></span></div>
+            <div class="picker rate-people"></div>
+        </div>
         <small class="rate-result muted"></small>`;
 
     row.querySelector('.activity-dot').style.background = activity.color;
@@ -3155,12 +3172,54 @@ function renderRateRow(activity, schedule) {
         });
     });
 
+    /* Los frentes salen de los recursos asignados; el numero a mano queda solo
+       para cuando todavia no se han cargado las maquinas. */
+    const assigned = new Set(activity.resources || []);
+    const fronts = frontsOf(activity, state.resources);
     const crews = row.querySelector('.rate-crews');
-    crews.value = String(entry.crews || crewsOf(activity));
+    crews.value = String(entry.crews || crewsOf(activity, state.resources));
+    crews.disabled = fronts !== null;
+    crews.title = fronts !== null
+        ? 'Sale de la maquinaria y el personal asignados mas abajo'
+        : 'Cuantos tramos se atacan a la vez. Asigna las maquinas y sale solo.';
     crews.addEventListener('change', () => {
         const next = Math.max(1, Math.round(Number(crews.value) || 1));
         patchActivity(activity, { crews: next });
     });
+
+    const people = row.querySelector('.rate-people');
+    const label = row.querySelector('.rate-fronts');
+    if (!state.resources.length) {
+        label.textContent = 'sin recursos cargados';
+        people.innerHTML = '<span class="muted">Carga la maquinaria en Recursos y los frentes salen de ella.</span>';
+    } else {
+        label.textContent = fronts === null
+            ? 'ninguno asignado'
+            : `${fronts} frente(s) · ${assigned.size} asignado(s)`;
+        // Lo asignado primero, y la maquinaria antes que el personal: si no, en
+        // una obra con gente lo que esta marcado queda fuera de la caja.
+        const ordenados = [...state.resources].sort((a, b) =>
+            (assigned.has(b.id) ? 1 : 0) - (assigned.has(a.id) ? 1 : 0)
+            || (b.type === 'maquina' ? 1 : 0) - (a.type === 'maquina' ? 1 : 0)
+            || (a.name || '').localeCompare(b.name || '', 'es'));
+        for (const resource of ordenados) {
+            const chip = document.createElement('label');
+            chip.className = 'picker-chip' + (assigned.has(resource.id) ? ' on' : '');
+            const check = document.createElement('input');
+            check.type = 'checkbox';
+            check.checked = assigned.has(resource.id);
+            const name = document.createElement('span');
+            name.textContent = `${typeOf(resource.type).icon} ${resource.name}`
+                + (resource.group ? ` · ${resource.group}` : '');
+            chip.append(check, name);
+            check.addEventListener('change', () => {
+                const next = new Set(assigned);
+                if (check.checked) next.add(resource.id); else next.delete(resource.id);
+                patchActivity(activity, { resources: [...next] });
+            });
+            people.append(chip);
+        }
+    }
 
     const scope = row.querySelector('.rate-scope');
     for (const option of ACTIVITY_SCOPES) scope.append(new Option(option.label, option.id));

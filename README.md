@@ -163,6 +163,42 @@ Lo que no hace es dejar una cuadrilla parada. Si el siguiente de la lista
 todavia espera a su antecesor y hay otro listo, se toma ese: el orden es una
 preferencia, no una cola rigida.
 
+### Los frentes salen de la maquinaria
+
+El orden dice por donde se empieza; los **frentes** dicen en cuantas partes a
+la vez. Reordenar nunca acorta la obra: las maquinas si.
+
+Los frentes de una actividad no se escriben a mano, salen de la maquinaria y el
+personal que se le asigne, en *Programa → Rendimientos*. La regla es que **un
+frente es una cuadrilla**: los recursos que comparten el campo *cuadrilla*
+trabajan juntos y valen por uno, y el que no la trae —una excavadora suelta— es
+un frente por si mismo.
+
+| Asignado a la actividad | Frentes |
+| --- | --- |
+| 3 excavadoras sin cuadrilla | 3 |
+| 3 excavadoras, todas "Cuadrilla A" | 1 |
+| 4 personas repartidas en "Cuadrilla A" y "Cuadrilla B" | 2 |
+
+Mientras no se le asigne nada, los frentes se siguen escribiendo a mano. En
+cuanto hay recursos asignados, el campo se bloquea: no sirve declarar tres
+frentes teniendo una sola maquina en la obra.
+
+Sobre un parque de 20 aerogeneradores, pasar de una excavadora a tres acorta la
+obra de 227 a 196 dias trabajados; sumando dos cuadrillas al tendido y a la cama
+de arena, a 175.
+
+### Choques de agenda
+
+Una maquina no puede estar en dos frentes a la vez. Si queda asignada a dos
+actividades cuyas fechas se pisan, el programa lo dice con nombre y fechas:
+
+> `Retro Komatsu esta en "Excavacion" y en "Excavacion de cruce" del 12/10 al
+> 21/10.`
+
+Sin ese aviso el programa sale optimista y nadie lo nota hasta el dia que hay
+que mandar la maquina a dos partes.
+
 ## Actividades y sus tramos
 
 La obra se organiza en dos niveles, como se lleva en terreno:

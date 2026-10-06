@@ -173,8 +173,40 @@ export function scopeOf(activity) {
     return rateOf(activity).unit === 'ml_fase' ? 'circuito' : 'zanja';
 }
 
-/** Frentes de trabajo: cuantos tramos de la actividad avanzan a la vez. */
-export function crewsOf(activity) {
+/**
+ * Frentes que salen de la maquinaria y el personal asignados a la actividad.
+ *
+ * Un frente es una cuadrilla: los recursos que comparten el campo "cuadrilla"
+ * trabajan juntos y valen por uno. El que no la trae —una excavadora suelta—
+ * es un frente por si mismo. Asi tres retros sin cuadrilla son tres frentes, y
+ * tres que se marcaron como "Cuadrilla A" son uno.
+ *
+ * @returns {number|null} null si la actividad no tiene recursos asignados.
+ */
+export function frontsOf(activity, resources = []) {
+    const assigned = new Set((activity && activity.resources) || []);
+    if (!assigned.size) return null;
+    const crews = new Set();
+    let alone = 0;
+    for (const resource of resources) {
+        if (!assigned.has(resource.id) || resource.active === false) continue;
+        const crew = String(resource.group || '').trim().toLowerCase();
+        if (crew) crews.add(crew); else alone++;
+    }
+    const total = crews.size + alone;
+    return total > 0 ? total : null;
+}
+
+/**
+ * Frentes de trabajo: cuantos tramos de la actividad avanzan a la vez. Si se le
+ * asignaron recursos, mandan ellos: no sirve declarar tres frentes teniendo una
+ * sola maquina en la obra.
+ */
+export function crewsOf(activity, resources = null) {
+    if (resources) {
+        const fronts = frontsOf(activity, resources);
+        if (fronts) return fronts;
+    }
     const value = Number(activity && activity.crews);
     return Number.isFinite(value) && value >= 1 ? Math.round(value) : 1;
 }
@@ -452,7 +484,7 @@ export function topoOrder(nodes, linksOf) {
  * @returns {{tasks, activities, cycle, from, to, orphans, duplicates, context}}
  */
 export function computeSchedule(activities, tasks, options = {}) {
-    const { start, calendar = 'todos', shapesById = new Map(), metersPerUnit = 1 } = options;
+    const { start, calendar = 'todos', shapesById = new Map(), metersPerUnit = 1, resources = [] } = options;
     const cal = calendarOf(calendar);
     const projectStart = nextWorkday(start || todayISO(), cal);
     const activityById = new Map(activities.map((a) => [a.id, a]));
@@ -542,7 +574,7 @@ export function computeSchedule(activities, tasks, options = {}) {
         const entry = plan.get(chosen);
         const activity = activityById.get(task.activityId);
         if (!crewsByActivity.has(activity.id)) {
-            crewsByActivity.set(activity.id, new Array(crewsOf(activity)).fill(null));
+            crewsByActivity.set(activity.id, new Array(crewsOf(activity, resources)).fill(null));
         }
         // El frente que se desocupa antes toma el tramo.
         const crews = crewsByActivity.get(activity.id);
@@ -619,7 +651,7 @@ export function computeSchedule(activities, tasks, options = {}) {
         const own = nodes.filter((task) => task.activityId === activity.id);
         const entries = own.map((task) => plan.get(task.id)).filter(Boolean);
         if (!entries.length) {
-            byActivity.set(activity.id, { tasks: 0, empty: true, crews: crewsOf(activity) });
+            byActivity.set(activity.id, { tasks: 0, empty: true, crews: crewsOf(activity, resources) });
             continue;
         }
         let first = entries[0].start;
@@ -643,7 +675,7 @@ export function computeSchedule(activities, tasks, options = {}) {
             critical,
             amount,
             unit: rateUnitOf(rateOf(activity).unit).unit,
-            crews: crewsOf(activity),
+            crews: crewsOf(activity, resources),
             broken: entries.some((e) => e.broken)
         });
     }
@@ -654,10 +686,58 @@ export function computeSchedule(activities, tasks, options = {}) {
         cycle,
         orphans,
         duplicates: duplicateRoutes(activities, tasks, ctx),
+        clashes: resourceClashes(activities, nodes, resources, plan, byActivity),
         context: ctx,
         from: projectStart,
         to: projectEnd
     };
+}
+
+/**
+ * Maquinas y personal comprometidos en dos sitios a la vez.
+ *
+ * Una excavadora asignada a la excavacion de zanja y a la de cruces no puede
+ * estar en las dos si sus fechas se pisan: el programa saldria optimista y
+ * nadie lo notaria hasta el dia que hay que mandar la maquina.
+ */
+export function resourceClashes(activities, tasks, resources, plan, byActivity) {
+    if (!resources || !resources.length) return [];
+    const byResource = new Map();
+    const add = (ids, label, start, end) => {
+        if (!start || !end) return;
+        for (const id of ids || []) {
+            if (!byResource.has(id)) byResource.set(id, []);
+            byResource.get(id).push({ label, start, end });
+        }
+    };
+    for (const activity of activities) {
+        const entry = byActivity.get(activity.id);
+        if (entry && !entry.empty) add(activity.resources, activity.name, entry.start, entry.end);
+    }
+    for (const task of tasks) {
+        const entry = plan.get(task.id);
+        if (entry) add(task.resources, task.title, entry.start, entry.end);
+    }
+
+    const found = [];
+    for (const resource of resources) {
+        const spells = (byResource.get(resource.id) || []).sort((a, b) => (a.start < b.start ? -1 : 1));
+        for (let i = 0; i < spells.length; i++) {
+            for (let j = i + 1; j < spells.length; j++) {
+                // Ordenados por inicio: en cuanto uno empieza despues del fin
+                // del primero, los que vienen detras tampoco se pisan.
+                if (spells[j].start > spells[i].end) break;
+                found.push({
+                    resource,
+                    a: spells[i],
+                    b: spells[j],
+                    from: spells[j].start,
+                    to: spells[i].end < spells[j].end ? spells[i].end : spells[j].end
+                });
+            }
+        }
+    }
+    return found;
 }
 
 /**
