@@ -799,9 +799,17 @@ textarea { resize: vertical; }
     color: #fecaca;
     background: rgba(239, 68, 68, 0.12);
     border: 1px solid rgba(239, 68, 68, 0.4);
+    /* Un aviso de muchas lineas empujaba el programa entero fuera de la
+       pantalla: se queda en su sitio y se desplaza por dentro. */
+    flex: none;
+    max-height: 18vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
+.schedule-head, #schedule-summary { flex: none; }
 
-.schedule-list { list-style: none; margin: 0; padding: 8px 12px 4px; display: grid; gap: 8px; overflow-y: auto; flex: 1; min-height: 0; align-content: start; }
+/* El programa nunca cede todo su alto a lo que tiene encima. */
+.schedule-list { list-style: none; margin: 0; padding: 8px 12px 4px; display: grid; gap: 8px; overflow-y: auto; flex: 1 1 auto; min-height: 140px; align-content: start; }
 .sub-panel > .modal-hint { flex: none; }
 .schedule-row {
     border: 1px solid var(--line);
@@ -1065,3 +1073,59 @@ textarea { resize: vertical; }
 .wizard-check.good { color: #bbf7d0; background: rgba(34, 197, 94, .10); border: 1px solid rgba(34, 197, 94, .35); }
 .wizard-check strong { font-size: 13px; }
 .wizard-check ul { margin: 0; padding-left: 18px; }
+
+/* ---------------------- Arrastrar para ordenar la obra -------------------- */
+
+.activity-group, .schedule-row { position: relative; }
+.activity-group.has-drag .activity-head { padding-right: 34px; }
+.schedule-row.has-drag .schedule-top { padding-right: 24px; }
+
+.drag-handle {
+    position: absolute;
+    top: 8px;
+    right: 6px;
+    z-index: 2;
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1;
+    cursor: grab;
+    /* Sin esto el panel se desplaza en vez de arrastrar la actividad. */
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+.drag-handle:hover { color: var(--text); background: rgba(148, 163, 184, .14); }
+.activity-group.has-drag .drag-handle { top: 12px; right: 10px; }
+
+.task-list.sorting, .schedule-list.sorting { cursor: grabbing; }
+.task-list.sorting .drag-handle, .schedule-list.sorting .drag-handle { cursor: grabbing; }
+
+.activity-group.dragging, .schedule-row.dragging {
+    opacity: .9;
+    background: #121c27;
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    border-radius: 11px;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, .45);
+}
+.activity-group.dragging { border-top-color: transparent; }
+/* Mientras se arrastra no interesa el detalle, solo donde va a caer. */
+.task-list.sorting .activity-group .task-list,
+.task-list.sorting .activity-group .activity-actions { opacity: .35; }
+
+.link-btn {
+    background: none;
+    border: 0;
+    padding: 2px 4px;
+    color: var(--accent);
+    font: inherit;
+    font-size: 11.5px;
+    text-decoration: underline;
+    cursor: pointer;
+}

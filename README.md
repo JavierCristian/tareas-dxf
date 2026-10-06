@@ -84,17 +84,21 @@ alcance, y los tramos que le corresponden:
 | Actividad | Sobre | Se mide en | Va despues de |
 | --- | --- | --- | --- |
 | Excavacion | zanjas | m³/dia | — |
-| Cama de arena | zanjas | ml/dia | Excavacion |
-| Tendido de cobre | zanjas | ml/dia | Cama de arena |
-| Cable de potencia | circuitos MT | ml de conductor/dia | Tendido de cobre |
+| Tendido de cobre | zanjas | ml/dia | Excavacion |
+| Cama de arena | zanjas | ml/dia | Tendido de cobre |
+| Cable de potencia | circuitos MT | ml de conductor/dia | Cama de arena |
 | Fibra optica | circuitos | ml/dia | Cable de potencia |
 | Tapado y compactacion | zanjas | m³/dia | Fibra optica |
 | Excavacion de cruce | cruces | m³/dia | — |
 | Ductos y hormigonado | cruces | ml/dia | Excavacion de cruce |
 | Relleno y reposicion | cruces | ml/dia | Ductos y hormigonado |
 
-Las que no se controlen se destacan y la cadena se cierra sola: sin cama de
-arena, el cobre pasa a colgar de la excavacion.
+Los cruces son una cadena aparte, que corre en paralelo a la zanja. Las
+actividades que no se controlen se destacan y la cadena se cierra sola: sin
+cama de arena, el cable de potencia pasa a colgar del tendido de cobre.
+
+Esta es solo la propuesta de partida: la secuencia se cambia arrastrando (ver
+mas abajo).
 
 **La malla de puesta a tierra va una por zanja**, asi que el tendido de cobre
 se mide sobre las capas de zanja y no se repite por circuito. **La fibra va una
@@ -124,6 +128,23 @@ puede armar la obra igual y corregir el plano despues.
 
 Con un parque de 20 aerogeneradores el asistente crea 9 actividades y 246
 tramos: 20.093 m de zanja, 68.500 m³ y 35.993 m de media tension.
+
+## La secuencia de la obra
+
+El orden de la lista **es** la secuencia del programa: cada actividad espera a
+la que tiene justo encima. Para cambiarla se arrastra por el asa (⠿), con el
+dedo o con el mouse, en la pestana *Tareas* o en *Programa*; las fechas se
+recalculan al soltar. Los botones ↑ ↓ hacen lo mismo de a un paso.
+
+No todas las obras son una sola cadena. Una actividad cuyas antecesoras se
+marcan a mano, con las casillas *"Va despues de"*, queda fuera del
+encadenamiento automatico y conserva lo que se le haya puesto, por mucho que se
+reordene la lista. Asi los cruces de camino siguen corriendo en paralelo a la
+zanja en lugar de esperarla. Esas actividades se muestran como *"Va despues de
+(a mano)"* y ofrecen un enlace para volver a seguir el orden de la lista.
+
+El desfase en dias de cada enlace tambien se conserva: un tapado que empieza
+tres dias despues del tendido lo sigue haciendo aunque cambie de posicion.
 
 ## Actividades y sus tramos
 

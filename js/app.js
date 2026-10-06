@@ -31,7 +31,7 @@ import {
 } from './places.js';
 import {
     ACTIVITY_COLORS, createActivity, normalizeActivity, tasksOf, looseTasks,
-    activityProgress, nextTaskName, reorder
+    activityProgress, nextTaskName, reorder, reorderTo, relinkChain
 } from './activities.js';
 import {
     projectRange, projectStateAt, taskStateAt, progressCurve, addDays, daysBetween,
@@ -54,7 +54,7 @@ import {
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '16';
+export const APP_VERSION = '17';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -126,6 +126,7 @@ function init() {
     wireSchedule();
     wireBulk();
     wireWizard();
+    wireSortable();
     wireReport();
     wireSplitModal();
 
@@ -1196,11 +1197,17 @@ function renderActivityGroup(group, shown, nextNumber) {
     const { activity } = group;
     const item = document.createElement('li');
     item.className = 'activity-group';
+    if (activity) item.dataset.id = activity.id;
     if (activity && state.activeActivity === activity.id) item.classList.add('on');
 
     const progress = activity
         ? activityProgress(activity.id, state.tasks, state.shapesById, state.unitScale)
         : null;
+
+    if (activity && state.activities.length > 1) {
+        item.classList.add('has-drag');
+        item.append(dragHandle('Arrastra para cambiar la secuencia de la obra'));
+    }
 
     const head = document.createElement('button');
     head.type = 'button';
@@ -2155,7 +2162,10 @@ async function runWizard() {
                 color: ACTIVITY_COLORS[(used + index) % ACTIVITY_COLORS.length],
                 rate: { unit: suggestion.unit, value: 0 },
                 scope: suggestion.scope,
-                crews: 1
+                crews: 1,
+                // Las que abren una cadena se anclan a mano: los cruces corren
+                // en paralelo a la zanja y reordenar no debe encadenarlos a ella.
+                linksAuto: !suggestion.anchor
             });
             byKey.set(suggestion.key, activity);
             activities.push(activity);
@@ -2227,15 +2237,20 @@ async function runWizard() {
         await nextFrame();
         showLoading('Guardando…');
         await nextFrame();
+        // Con cientos de tramos la lista se vuelve un rollo de diez mil pixeles,
+        // imposible de recorrer y de reordenar: se entrega plegada.
+        if (state.tasks.length + tasks.length > 60) {
+            for (const activity of activities) {
+                activity.collapsed = true;
+                state.scheduleClosed.add(activity.id);
+            }
+        }
         await saveActivities(activities);
         await saveTasks(tasks);
         state.activities.push(...activities);
         state.activities.sort((a, b) => (a.order || 0) - (b.order || 0));
         state.tasks.push(...tasks);
         state.schedule = null;
-        if (state.tasks.length > 60) {
-            for (const activity of activities) state.scheduleClosed.add(activity.id);
-        }
 
         hideLoading();
         closeWizard();
@@ -2257,11 +2272,116 @@ function wireWizard() {
     });
 }
 
+/* ------------------------------------------------------------------ */
+/* Orden de las actividades: la secuencia de la obra                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Arrastrar para reordenar, con el dedo o con el mouse.
+ *
+ * La lista se reacomoda en vivo bajo el dedo y al soltar se avisa con la
+ * posicion final. Solo arranca desde el asa, para que el resto de la fila siga
+ * respondiendo a los toques y el panel se pueda desplazar normalmente.
+ */
+function makeSortable(list, itemSelector, onDrop) {
+    let drag = null;
+
+    const indexOf = (item) => [...list.querySelectorAll(itemSelector)].indexOf(item);
+
+    const move = (e) => {
+        if (!drag || e.pointerId !== drag.pointerId) return;
+        e.preventDefault();
+
+        // Se intercambia con el vecino cuyo centro ya quedo pasado.
+        for (const other of list.querySelectorAll(itemSelector)) {
+            if (other === drag.item) continue;
+            const box = other.getBoundingClientRect();
+            const middle = box.top + box.height / 2;
+            const below = drag.item.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING;
+            if (below && e.clientY > middle) other.after(drag.item);
+            else if (!below && e.clientY < middle) other.before(drag.item);
+        }
+        autoScroll(list, e.clientY);
+    };
+
+    const end = (e) => {
+        if (!drag || (e && e.pointerId !== drag.pointerId)) return;
+        const { item, id, from } = drag;
+        drag = null;
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', end);
+        window.removeEventListener('pointercancel', end);
+        item.classList.remove('dragging');
+        list.classList.remove('sorting');
+        const to = indexOf(item);
+        // Aunque no haya cambiado de sitio hay que avisar: la lista quedo
+        // movida a mano y solo volver a dibujarla la deja igual al modelo.
+        onDrop(id, to >= 0 ? to : from);
+    };
+
+    list.addEventListener('pointerdown', (e) => {
+        const handle = e.target.closest('[data-drag]');
+        if (!handle || !list.contains(handle) || e.button > 0) return;
+        const item = handle.closest(itemSelector);
+        if (!item || !item.dataset.id) return;
+        e.preventDefault();
+        drag = { item, id: item.dataset.id, from: indexOf(item), pointerId: e.pointerId };
+        item.classList.add('dragging');
+        list.classList.add('sorting');
+        // Se escucha en la ventana y no en la lista: al mover la fila dentro del
+        // DOM el navegador suelta la captura del puntero, y entonces el dedo
+        // puede levantarse sobre cualquier otra cosa —o fuera de la pantalla—
+        // sin que la lista llegue a enterarse de que hay que guardar.
+        window.addEventListener('pointermove', move, { passive: false });
+        window.addEventListener('pointerup', end);
+        window.addEventListener('pointercancel', end);
+    });
+}
+
+/** Acerca el borde: arrastrar hasta arriba o abajo desplaza la lista. */
+function autoScroll(list, y) {
+    const box = (list.closest('.panel-scroll') || list).getBoundingClientRect();
+    const scroller = list.closest('.panel-scroll') || list;
+    const margin = 48;
+    if (y < box.top + margin) scroller.scrollTop -= 12;
+    else if (y > box.bottom - margin) scroller.scrollTop += 12;
+}
+
+/** Asa de arrastre de una actividad. */
+function dragHandle(title) {
+    const handle = document.createElement('span');
+    handle.className = 'drag-handle';
+    handle.dataset.drag = '';
+    handle.textContent = '⠿';
+    handle.title = title;
+    handle.setAttribute('aria-hidden', 'true');
+    return handle;
+}
+
+function wireSortable() {
+    makeSortable($('#task-list'), '.activity-group', dropActivity);
+    makeSortable($('#schedule-list'), '.schedule-row', dropActivity);
+}
+
 async function moveActivity(id, delta) {
-    const sorted = reorder(state.activities, id, delta);
-    if (!sorted) return;
-    state.activities = sorted;
-    await saveActivities(sorted);
+    await applyOrder(reorder(state.activities, id, delta));
+}
+
+async function dropActivity(id, target) {
+    await applyOrder(reorderTo(state.activities, id, target));
+}
+
+/**
+ * Guarda un nuevo orden. Mover una actividad mueve la obra: la cadena se
+ * reescribe para que cada una espere a la que quedo encima.
+ */
+async function applyOrder(sorted) {
+    if (sorted) {
+        state.activities = relinkChain(sorted);
+        await saveActivities(state.activities);
+    }
+    // Se redibuja siempre, incluso si no hubo cambio: el arrastre movio las
+    // filas a mano y hay que dejarlas como las tiene el modelo.
     renderTasks();
     renderSchedule();
 }
@@ -2619,6 +2739,11 @@ function renderProgramActivity(activity, schedule, span) {
     const entry = schedule.activities.get(activity.id) || {};
     const row = document.createElement('li');
     row.className = 'schedule-row' + (entry.critical ? ' critical' : '');
+    row.dataset.id = activity.id;
+    if (state.activities.length > 1) {
+        row.classList.add('has-drag');
+        row.append(dragHandle('Arrastra para cambiar la secuencia'));
+    }
     const open = !state.scheduleClosed.has(activity.id);
 
     const progress = activityProgress(activity.id, state.tasks, state.shapesById, state.unitScale);
@@ -2666,10 +2791,14 @@ function renderProgramActivity(activity, schedule, span) {
 
     // Antecesoras: la regla general, que luego se baja tramo a tramo.
     const links = activityLinks(activity);
+    const manual = activity.linksAuto === false;
     const box = document.createElement('div');
     box.className = 'schedule-links';
     const label = document.createElement('span');
-    label.textContent = 'Va despues de:';
+    label.textContent = manual ? 'Va despues de (a mano):' : 'Va despues de:';
+    label.title = manual
+        ? 'Esta actividad no sigue el orden de la lista: la enlazaste tu.'
+        : 'Sale del orden de la lista. Si marcas otra, pasa a ser manual.';
     box.append(label);
     for (const other of state.activities) {
         if (other.id === activity.id) continue;
@@ -2685,7 +2814,9 @@ function renderProgramActivity(activity, schedule, span) {
         check.addEventListener('change', () => {
             const next = links.filter((link) => link.id !== other.id);
             if (check.checked) next.push({ id: other.id, lag: 0 });
-            patchActivity(activity, { predecessors: next });
+            // Tocar los enlaces es tomar el control: desde aqui, reordenar la
+            // lista ya no los reescribe.
+            patchActivity(activity, { predecessors: next, linksAuto: false });
         });
         if (current) {
             const lag = document.createElement('input');
@@ -2707,6 +2838,21 @@ function renderProgramActivity(activity, schedule, span) {
         const none = document.createElement('span');
         none.textContent = '— (es la unica actividad)';
         box.append(none);
+    }
+    if (manual) {
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.className = 'link-btn';
+        back.textContent = 'seguir el orden de la lista';
+        back.title = 'Vuelve a esperar a la actividad que tiene justo encima';
+        back.addEventListener('click', async () => {
+            activity.linksAuto = true;
+            state.activities = relinkChain(state.activities);
+            await saveActivities(state.activities);
+            renderSchedule();
+            renderTasks();
+        });
+        box.append(back);
     }
     row.append(box);
 

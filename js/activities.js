@@ -27,6 +27,7 @@ export function createActivity(projectId, patch = {}) {
         crews: 1,            // frentes: cuantos tramos se atacan a la vez
         duration: null,      // dias por tramo si no hay rendimiento (compatibilidad)
         predecessors: [],    // ids de actividades previas (programa maestro)
+        linksAuto: true,     // false = sus antecesoras las maneja el usuario
         collapsed: false,
         createdAt: now,
         updatedAt: now,
@@ -117,10 +118,46 @@ export function nextTaskName(activity, tasks) {
 export function reorder(activities, id, delta) {
     const sorted = [...activities].sort((a, b) => (a.order || 0) - (b.order || 0));
     const index = sorted.findIndex((a) => a.id === id);
-    const target = index + delta;
-    if (index < 0 || target < 0 || target >= sorted.length) return null;
+    return moveTo(sorted, index, index + delta);
+}
+
+/** Lleva una actividad a una posicion concreta de la lista (arrastre). */
+export function reorderTo(activities, id, target) {
+    const sorted = [...activities].sort((a, b) => (a.order || 0) - (b.order || 0));
+    return moveTo(sorted, sorted.findIndex((a) => a.id === id), target);
+}
+
+function moveTo(sorted, index, target) {
+    if (index < 0 || target < 0 || target >= sorted.length || index === target) return null;
     const [moved] = sorted.splice(index, 1);
     sorted.splice(target, 0, moved);
     sorted.forEach((activity, i) => { activity.order = i; });
+    return sorted;
+}
+
+/** Desfase que ya tenia declarado con esa antecesora, para no perderlo. */
+function lagOf(activity, id) {
+    const found = (activity.predecessors || []).find((p) => (typeof p === 'string' ? p : p.id) === id);
+    return found && typeof found !== 'string' ? Number(found.lag) || 0 : 0;
+}
+
+/**
+ * Reescribe la secuencia del programa siguiendo el orden de la lista: cada
+ * actividad espera a la que tiene justo encima. Es lo que hace que mover una
+ * actividad cambie la obra de verdad y no solo la fila que se ve.
+ *
+ * Las actividades que el usuario enlazo a mano (linksAuto === false) conservan
+ * sus antecesoras. Asi una cadena paralela —los cruces, que se hacen junto a la
+ * zanja y no la esperan— sobrevive a cualquier reordenamiento.
+ */
+export function relinkChain(activities) {
+    const sorted = [...activities].sort((a, b) => (a.order || 0) - (b.order || 0));
+    const now = Date.now();
+    sorted.forEach((activity, index) => {
+        if (activity.linksAuto === false) return;
+        const before = sorted[index - 1];
+        activity.predecessors = before ? [{ id: before.id, lag: lagOf(activity, before.id) }] : [];
+        activity.updatedAt = now;
+    });
     return sorted;
 }

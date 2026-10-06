@@ -305,14 +305,17 @@ function alongRoute(shape, cables) {
  */
 export const SUGGESTED_ACTIVITIES = [
     { key: 'exc', name: 'Excavacion', target: 'zanja', unit: 'm3', scope: 'zanja', after: [] },
-    { key: 'cama', name: 'Cama de arena', target: 'zanja', unit: 'ml', scope: 'zanja', after: ['exc'] },
-    { key: 'pt', name: 'Tendido de cobre', target: 'zanja', unit: 'ml', scope: 'zanja', after: ['cama'] },
-    { key: 'pot', name: 'Cable de potencia', target: 'circuito', familias: ['MT'], unit: 'ml_fase', scope: 'circuito', after: ['pt'] },
+    // La malla de puesta a tierra va al fondo de la zanja, antes de la cama.
+    { key: 'pt', name: 'Tendido de cobre', target: 'zanja', unit: 'ml', scope: 'zanja', after: ['exc'] },
+    { key: 'cama', name: 'Cama de arena', target: 'zanja', unit: 'ml', scope: 'zanja', after: ['pt'] },
+    { key: 'pot', name: 'Cable de potencia', target: 'circuito', familias: ['MT'], unit: 'ml_fase', scope: 'circuito', after: ['cama'] },
     // La fibra va una por tramo de circuito. Si se dibujo aparte va por sus
     // capas FO; si no, sigue el mismo recorrido que el circuito de MT.
     { key: 'fo', name: 'Fibra optica', target: 'circuito', familias: ['FO', 'MT'], unit: 'ml', scope: 'circuito', after: ['pot'] },
     { key: 'tapa', name: 'Tapado y compactacion', target: 'zanja', unit: 'm3', scope: 'zanja', after: ['fo'] },
-    { key: 'exc_cruce', name: 'Excavacion de cruce', target: 'cruce', unit: 'm3', scope: 'zanja', after: [] },
+    // Los cruces son una cadena aparte: se hacen en paralelo a la zanja, asi
+    // que el primero se ancla a mano para que reordenar no lo encadene a ella.
+    { key: 'exc_cruce', name: 'Excavacion de cruce', target: 'cruce', unit: 'm3', scope: 'zanja', after: [], anchor: true },
     { key: 'ducto', name: 'Ductos y hormigonado', target: 'cruce', unit: 'ml', scope: 'zanja', after: ['exc_cruce'] },
     { key: 'repo', name: 'Relleno y reposicion', target: 'cruce', unit: 'ml', scope: 'zanja', after: ['ducto'] }
 ];

@@ -367,8 +367,14 @@ function orphanOf(task, activities, tasks, ctx) {
  * un error de carga: la zanja compartida por tres circuitos se excava una vez,
  * y si se cargo una vez por circuito los m3 se cuentan de mas.
  */
+export const DUPLICATE_MIN_FACTOR = 5;
+
 export function duplicateRoutes(activities, tasks, ctx) {
     const found = [];
+    // Dos zanjas consecutivas se tocan en la junta, y un trecho corto cabe
+    // entero dentro de la tolerancia de su vecino. Eso no es doble conteo: para
+    // contarlo hay que compartir un trecho de verdad, no un empalme.
+    const floor = ctx.tolerance * DUPLICATE_MIN_FACTOR;
     for (const activity of activities) {
         const perCircuit = scopeOf(activity) === 'circuito';
         const own = tasks.filter((task) => task.activityId === activity.id && (task.elements || []).length);
@@ -376,6 +382,7 @@ export function duplicateRoutes(activities, tasks, ctx) {
             for (let j = i + 1; j < own.length; j++) {
                 const hit = shareRoute(own[i], own[j], ctx);
                 if (!hit.shares) continue;
+                if (!hit.sameElement && hit.meters < floor) continue;
                 // En una actividad que se repite por circuito, compartir zanja
                 // es lo esperado: solo molesta si ademas es el mismo circuito,
                 // es decir, si los dos tramos usan la misma capa del plano.
