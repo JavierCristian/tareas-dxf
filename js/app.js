@@ -47,10 +47,14 @@ import {
     equalCuts, projectOnPath, pathLength, sliceRange, chain, joinTolerance, MIN_PART_RATIO
 } from './edits.js';
 import { dayReport } from './report.js';
+import {
+    classifyLayers, summarize as summarizeScheme, verifyTriadas, nameTrenches,
+    SUGGESTED_ACTIVITIES, layersFor
+} from './parque.js';
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '15';
+export const APP_VERSION = '16';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -80,6 +84,7 @@ const state = {
     placeDraft: null,       // ubicacion en edicion
     activityDraft: null,    // actividad en edicion
     bulkDraft: null,        // carga de tramos desde una capa
+    wizard: null,           // asistente que arma la obra desde las capas
     timeline: null,         // {from, to, days, date, playing, timer} cuando el cursor esta activo
     splitTarget: null,      // figura que se esta dividiendo
     advance: null,          // {shape, fromStart, tasks} al registrar avance
@@ -120,6 +125,7 @@ function init() {
     wireActivities();
     wireSchedule();
     wireBulk();
+    wireWizard();
     wireReport();
     wireSplitModal();
 
@@ -300,6 +306,9 @@ async function importDxfFile(file) {
             toast('El plano es muy grande: se cargo una parte de las entidades.');
         }
         loadIntoApp(project, scene, [], [], [], []);
+        // Si el plano viene clasificado, se ofrece armar la obra de una vez
+        // en lugar de dejar al usuario crear 250 tramos a mano.
+        if (schemeOf()) openWizard();
     } catch (error) {
         hideLoading();
         console.error(error);
@@ -1050,6 +1059,7 @@ function renderAll() {
     renderSchedule();
     renderSelectionCard();
     renderElementPanel();
+    renderWizardButton();
 }
 
 /**
@@ -1145,6 +1155,9 @@ function renderTasks() {
         summary.append(chip(`${stats.counts[status.id]} ${status.label.toLowerCase()}`, status.color));
     }
     if (stats.overdue) summary.append(chip(`${stats.overdue} vencidas`, '#ef4444'));
+    if (!state.activeActivity && visible.length > MARKER_LIMIT) {
+        summary.append(chip('toca una actividad para verla en el plano', null));
+    }
     $('#btn-clear-activity').hidden = !state.activeActivity;
 
     if (!state.tasks.length && !state.activities.length) {
@@ -1347,6 +1360,22 @@ function tag(text, danger = false) {
     return element;
 }
 
+/** A partir de aqui los globos de tarea estorban mas de lo que ayudan. */
+const MARKER_LIMIT = 60;
+
+/**
+ * Tramos que llevan globo en el plano.
+ *
+ * Una obra armada desde el plano tiene cientos de tramos, y varias actividades
+ * recorren la misma zanja: dibujarlos todos tapa el dibujo con una pila de
+ * globos superpuestos. Al elegir una actividad se ven los suyos; mientras
+ * tanto, el plano se deja limpio y el avance se lee por el color.
+ */
+function markersFor(tasks) {
+    if (state.activeActivity) return tasks.filter((task) => task.activityId === state.activeActivity);
+    return tasks.length > MARKER_LIMIT ? [] : tasks;
+}
+
 function refreshMarkers() {
     renderMarkers(filterTasks(state.tasks, { ...state.filters, resourceNames: new Map() }));
 }
@@ -1371,8 +1400,17 @@ function renderMarkers(tasks) {
         });
     }
 
+    // Una obra armada desde el plano tiene cientos de tramos, y varias
+    // actividades recorren la misma zanja: dibujarlos todos tapa el dibujo con
+    // una pila de globos. Mientras no se elija una actividad, el plano se deja
+    // limpio y el avance se lee por el color de la geometria.
+    const shown = markersFor(tasks);
+    // El numero del globo es el que lleva la tarea en la lista, aunque se
+    // dibuje solo una parte: si no, el 3 del plano no seria el 3 del panel.
+    const numbers = new Map(tasks.map((task, index) => [task.id, index + 1]));
+
     const timeState = date ? projectStateAt(state.tasks, state.shapesById, date, state.unitScale) : null;
-    tasks.forEach((task, index) => {
+    shown.forEach((task) => {
         const anchor = taskAnchor(task);
         if (!anchor) return;
         let color = statusOf(task.status).color;
@@ -1390,7 +1428,7 @@ function renderMarkers(tasks) {
             x: anchor.x,
             y: anchor.y,
             color,
-            label: String(index + 1),
+            label: String(numbers.get(task.id) || ''),
             active: state.draft ? state.draft.id === task.id : false
         });
     });
@@ -1868,6 +1906,354 @@ function wireBulk() {
     $('#bulk-form').addEventListener('submit', (e) => {
         e.preventDefault();
         submitBulk();
+    });
+}
+
+/* ------------------------------------------------------------------ */
+/* Asistente: armar la obra desde las capas del plano                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Clasificacion de las capas importadas segun la convencion de obra, o null
+ * si este plano no la sigue. Se recalcula cada vez porque el usuario puede
+ * cambiar las capas importadas desde la pestaña Capas.
+ */
+function schemeOf() {
+    const names = [...state.layers.values()].filter((l) => l.imported).map((l) => l.name);
+    const classification = classifyLayers(names);
+    if (!classification.recognised) return null;
+    if (!classification.trenches.length && classification.circuits.length < 2) return null;
+    return classification;
+}
+
+/** El boton de armar solo tiene sentido si el plano viene clasificado. */
+function renderWizardButton() {
+    const button = $('#btn-wizard');
+    if (!button) return;
+    button.hidden = !schemeOf();
+}
+
+/**
+ * Cuando el plano viene clasificado con la convencion de obra electrica
+ * —tipos de zanja por un lado y circuitos por tramo por el otro— se ofrece
+ * armar la obra completa de una vez: las actividades, todos los tramos con su
+ * nombre y su seccion, y la verificacion de que la zanja alcanza para los
+ * circuitos que pasan por ella.
+ */
+function openWizard() {
+    const classification = schemeOf();
+    if (!classification) return;
+    state.wizard = {
+        classification,
+        // Las secciones vienen del tipo de zanja, pero se pueden corregir.
+        sections: Object.fromEntries(classification.trenches.map((t) => [t.layer, { width: t.width, depth: t.depth }])),
+        chosen: new Set(SUGGESTED_ACTIVITIES.map((a) => a.key))
+    };
+    renderWizard();
+    $('#wizard-modal').classList.remove('hidden');
+}
+
+function closeWizard() {
+    $('#wizard-modal').classList.add('hidden');
+    state.wizard = null;
+}
+
+/** La clasificacion con las secciones que haya escrito el usuario. */
+function wizardScheme() {
+    const wizard = state.wizard;
+    const classification = {
+        ...wizard.classification,
+        trenches: wizard.classification.trenches.map((t) => ({ ...t, ...wizard.sections[t.layer] }))
+    };
+    return { classification, summary: summarizeScheme(classification, state.shapes, state.unitScale) };
+}
+
+/** Cuantos tramos generaria una actividad propuesta. */
+function wizardTaskCount(suggestion, classification) {
+    const layers = new Set(layersFor(suggestion, classification));
+    if (!layers.size) return 0;
+    if (suggestion.target === 'circuito') {
+        // La capa es el tramo: un cable de potencia por tramo de circuito.
+        return [...layers].filter((name) => state.shapes.some((s) => s.layer === name && measure(s))).length;
+    }
+    return state.shapes.filter((s) => layers.has(s.layer) && measure(s)).length;
+}
+
+function renderWizard() {
+    const wizard = state.wizard;
+    if (!wizard) return;
+    const { classification, summary } = wizardScheme();
+    const units = state.project.units === 'sin unidad' ? 'm' : state.project.units;
+
+    $('#wizard-intro').textContent = 'Este plano viene clasificado por tipo de zanja y por circuito, '
+        + 'asi que puedo crear las actividades y todos sus tramos de una vez, cada uno con su nombre '
+        + 'y su seccion. Revisa lo que encontre antes de crear.';
+
+    /* --- Tipos de zanja, con su seccion editable --- */
+    const box = $('#wizard-trenches');
+    box.innerHTML = '';
+    for (const trench of summary.trenches) {
+        const row = document.createElement('div');
+        row.className = 'wizard-row';
+        row.innerHTML = '<span><strong></strong><small></small></span>'
+            + '<input type="number" class="w-width" min="0.1" step="0.05" aria-label="Ancho">'
+            + '<span class="times">×</span>'
+            + '<input type="number" class="w-depth" min="0.1" step="0.05" aria-label="Profundidad">';
+        row.querySelector('strong').textContent = trench.layer;
+        row.querySelector('small').textContent =
+            `${trench.count} tramo(s) · ${formatNumber(trench.meters)} ${units} · `
+            + `${formatNumber(trench.volume)} m³ · ${trench.triadas} triada(s)`;
+
+        const width = row.querySelector('.w-width');
+        const depth = row.querySelector('.w-depth');
+        width.value = String(trench.width);
+        depth.value = String(trench.depth);
+        const update = () => {
+            wizard.sections[trench.layer] = {
+                width: Number(width.value) || trench.width,
+                depth: Number(depth.value) || trench.depth
+            };
+            renderWizard();
+        };
+        width.addEventListener('change', update);
+        depth.addEventListener('change', update);
+        box.append(row);
+    }
+
+    /* --- Circuitos --- */
+    const circuits = $('#wizard-circuits');
+    circuits.innerHTML = '';
+    for (const circuito of summary.circuits) {
+        const chip = document.createElement('span');
+        chip.className = 'wizard-chip' + (circuito.empty ? ' empty' : '');
+        chip.innerHTML = '<b></b><span></span>';
+        chip.querySelector('b').textContent = `${circuito.familia}-${circuito.codigo}`;
+        chip.querySelector('span').textContent = circuito.empty
+            ? 'sin dibujo'
+            : `${formatNumber(circuito.meters)} ${units}`;
+        chip.title = circuito.layers.map((l) => `${l.from}-${l.to}`).join(' · ');
+        circuits.append(chip);
+    }
+    $('#wizard-circuit-count').textContent = summary.circuits.length
+        ? `${summary.circuits.length} · ${formatNumber(summary.circuitMeters)} ${units}`
+        : 'ninguno';
+
+    /* --- Actividades propuestas --- */
+    const acts = $('#wizard-activities');
+    acts.innerHTML = '';
+    let total = 0;
+    for (const suggestion of SUGGESTED_ACTIVITIES) {
+        const count = wizardTaskCount(suggestion, classification);
+        // Lo que el plano no dibuja no se ofrece: sin cruces no hay hormigonado.
+        if (!count) { wizard.chosen.delete(suggestion.key); continue; }
+        if (wizard.chosen.has(suggestion.key)) total += count;
+
+        const row = document.createElement('label');
+        row.className = 'wizard-act';
+        row.innerHTML = '<input type="checkbox">'
+            + '<span class="grow"><strong></strong><small></small></span>'
+            + '<span class="count"></span>';
+        const check = row.querySelector('input');
+        check.checked = wizard.chosen.has(suggestion.key);
+        check.addEventListener('change', () => {
+            if (check.checked) wizard.chosen.add(suggestion.key);
+            else wizard.chosen.delete(suggestion.key);
+            renderWizard();
+        });
+        row.querySelector('strong').textContent = suggestion.name;
+        row.querySelector('small').textContent = `se mide en ${rateUnitOf(suggestion.unit).label}`
+            + (suggestion.scope === 'circuito' ? ' · se repite por circuito' : ' · una vez por zanja');
+        row.querySelector('.count').textContent = `${count} tramos`;
+        acts.append(row);
+    }
+
+    /* --- Verificacion: la zanja alcanza para los circuitos que pasan --- */
+    renderWizardCheck(classification, units);
+
+    /* --- Capas que quedan fuera --- */
+    $('#wizard-skipped').textContent = classification.others.length
+        ? `Fuera de la convencion, quedan solo como referencia: ${classification.others.join(', ')}.`
+        : '';
+
+    const create = $('#btn-wizard-create');
+    create.textContent = total
+        ? `Crear ${wizard.chosen.size} actividades y ${total} tramos`
+        : 'Crear la obra';
+    create.disabled = !total;
+}
+
+/**
+ * Contrasta cuantas triadas declara cada zanja contra cuantos circuitos pasan
+ * de verdad por ella. Es la unica comprobacion que puede delatar un error de
+ * trazado antes de que alguien excave.
+ */
+function renderWizardCheck(classification, units) {
+    const box = $('#wizard-check');
+    box.innerHTML = '';
+    if (!classification.circuits.length || !classification.trenches.length) return;
+
+    const verification = verifyTriadas(classification, state.shapes, { metersPerUnit: state.unitScale });
+    state.wizard.verification = verification;
+
+    const panel = document.createElement('div');
+    panel.className = 'wizard-check ' + (verification.tight.length ? 'bad' : 'good');
+    const title = document.createElement('strong');
+    if (verification.tight.length) {
+        title.textContent = verification.tight.length === 1
+            ? 'Hay una zanja donde la seccion no alcanza'
+            : `Hay ${verification.tight.length} zanjas donde la seccion no alcanza`;
+        panel.append(title);
+        const list = document.createElement('ul');
+        for (const row of verification.tight) {
+            const item = document.createElement('li');
+            item.textContent = `${row.layer}, ${formatNumber(row.meters)} ${units}: declara `
+                + `${row.declared} triada(s) y pasan ${row.peak} circuitos `
+                + `(${row.circuits.join(', ')}) a lo largo de ${formatNumber(row.excess)} ${units}.`;
+            list.append(item);
+        }
+        panel.append(list);
+        const hint = document.createElement('small');
+        hint.textContent = 'Puede ser un tipo de zanja mal asignado o un circuito mal trazado. '
+            + 'Se puede armar la obra igual y corregir el plano despues.';
+        panel.append(hint);
+    } else {
+        title.textContent = `Las secciones alcanzan: ${verification.checked} zanjas contrastadas `
+            + `contra ${verification.circuits} circuitos.`;
+        panel.append(title);
+    }
+    if (verification.loose.length) {
+        const loose = document.createElement('small');
+        loose.textContent = `${verification.loose.length} zanja(s) con seccion holgada `
+            + `(${formatNumber(verification.looseMeters)} ${units}): llevan menos circuitos de los que su tipo admite.`;
+        panel.append(loose);
+    }
+    box.append(panel);
+}
+
+/**
+ * Crea las actividades elegidas y sus tramos. Los de zanja salen de cada
+ * polilinea, con su seccion y el nombre del recorrido que la cruza; los de
+ * circuito salen de cada capa de circuito, que ya es un tramo por si misma.
+ */
+async function runWizard() {
+    const wizard = state.wizard;
+    if (!wizard) return;
+    const { classification } = wizardScheme();
+    const chosen = SUGGESTED_ACTIVITIES.filter((s) => wizard.chosen.has(s.key));
+    if (!chosen.length) return;
+
+    showLoading('Armando la obra…');
+    await nextFrame();
+    try {
+        const used = state.activities.length;
+        const activities = [];
+        const byKey = new Map();
+        chosen.forEach((suggestion, index) => {
+            const activity = createActivity(state.project.id, {
+                name: suggestion.name,
+                order: used + index,
+                color: ACTIVITY_COLORS[(used + index) % ACTIVITY_COLORS.length],
+                rate: { unit: suggestion.unit, value: 0 },
+                scope: suggestion.scope,
+                crews: 1
+            });
+            byKey.set(suggestion.key, activity);
+            activities.push(activity);
+        });
+
+        // Encadenar las actividades saltando las que no se crearon: si no se
+        // controla la cama de arena, el cobre pasa a colgar de la excavacion.
+        for (const suggestion of chosen) {
+            const links = [];
+            for (const key of suggestion.after) {
+                let current = key;
+                let guard = 0;
+                while (current && !byKey.has(current) && guard++ < SUGGESTED_ACTIVITIES.length) {
+                    const previous = SUGGESTED_ACTIVITIES.find((s) => s.key === current);
+                    current = previous && previous.after.length ? previous.after[0] : null;
+                }
+                if (current && byKey.has(current)) links.push({ id: byKey.get(current).id, lag: 0 });
+            }
+            byKey.get(suggestion.key).predecessors = links;
+        }
+
+        await nextFrame();
+        showLoading('Nombrando los tramos…');
+        await nextFrame();
+        const trenchNames = nameTrenches(classification, state.shapes, { metersPerUnit: state.unitScale });
+        const sectionByLayer = new Map(classification.trenches.map((t) => [t.layer, t]));
+        const tramoOf = new Map();
+        for (const circuito of classification.circuits) {
+            for (const l of circuito.layers) tramoOf.set(l.layer, { circuito, tramo: `${l.from}-${l.to}` });
+        }
+
+        const tasks = [];
+        for (const suggestion of chosen) {
+            const activity = byKey.get(suggestion.key);
+            const layers = new Set(layersFor(suggestion, classification));
+
+            if (suggestion.target === 'circuito') {
+                for (const name of layers) {
+                    const own = state.shapes.filter((s) => s.layer === name && measure(s));
+                    if (!own.length) continue;
+                    const info = tramoOf.get(name);
+                    tasks.push(createTask(state.project.id, {
+                        activityId: activity.id,
+                        title: `${suggestion.name} ${info.circuito.codigo} ${info.tramo}`,
+                        // Un circuito es una terna de fases R, S, T.
+                        ternas: 1,
+                        elements: own.map((shape) => elementRef(shape, anchorOf(shape)))
+                    }));
+                }
+                continue;
+            }
+
+            for (const shape of state.shapes) {
+                if (!layers.has(shape.layer) || !measure(shape)) continue;
+                const ref = elementRef(shape, anchorOf(shape));
+                const section = sectionByLayer.get(shape.layer);
+                if (section) {
+                    ref.width = section.width;
+                    ref.depth = section.depth;
+                }
+                tasks.push(createTask(state.project.id, {
+                    activityId: activity.id,
+                    title: `${suggestion.name} ${trenchNames.get(shape.id) || shape.layer}`,
+                    elements: [ref]
+                }));
+            }
+        }
+
+        await nextFrame();
+        showLoading('Guardando…');
+        await nextFrame();
+        await saveActivities(activities);
+        await saveTasks(tasks);
+        state.activities.push(...activities);
+        state.activities.sort((a, b) => (a.order || 0) - (b.order || 0));
+        state.tasks.push(...tasks);
+        state.schedule = null;
+        if (state.tasks.length > 60) {
+            for (const activity of activities) state.scheduleClosed.add(activity.id);
+        }
+
+        hideLoading();
+        closeWizard();
+        renderAll();
+        toast(`${activities.length} actividades y ${tasks.length} tramos creados. `
+            + 'Ponles rendimiento en Programa → Rendimientos para que calcule las fechas.');
+    } catch (error) {
+        hideLoading();
+        console.error(error);
+        alert('No se pudo armar la obra.\n\n' + (error.message || error));
+    }
+}
+
+function wireWizard() {
+    $('#btn-wizard').addEventListener('click', openWizard);
+    $('#wizard-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        runWizard();
     });
 }
 
@@ -4566,6 +4952,9 @@ function wireModals() {
     for (const button of $$('#bulk-modal [data-close]')) button.addEventListener('click', closeBulkModal);
     $('#bulk-modal').addEventListener('click', (e) => { if (e.target.id === 'bulk-modal') closeBulkModal(); });
 
+    for (const button of $$('#wizard-modal [data-close]')) button.addEventListener('click', closeWizard);
+    $('#wizard-modal').addEventListener('click', (e) => { if (e.target.id === 'wizard-modal') closeWizard(); });
+
     document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
         if (state.pick) return endPick(null);
@@ -4573,6 +4962,7 @@ function wireModals() {
         if (!$('#resource-modal').classList.contains('hidden')) return closeResourceModal();
         if (!$('#split-modal').classList.contains('hidden')) return closeSplitModal();
         if (!$('#bulk-modal').classList.contains('hidden')) return closeBulkModal();
+        if (!$('#wizard-modal').classList.contains('hidden')) return closeWizard();
         if (!$('#advance-modal').classList.contains('hidden')) return closeAdvanceModal();
         if (!$('#activity-modal').classList.contains('hidden')) return closeActivityModal();
         if (!$('#place-modal').classList.contains('hidden')) return closePlaceModal();

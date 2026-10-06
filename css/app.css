@@ -1003,3 +1003,65 @@ textarea { resize: vertical; }
 .duplicate-line .ghost.small { padding: 2px 8px; min-height: 0; font-size: 11.5px; }
 
 .rate-grid .wide { grid-column: 1 / -1; }
+
+/* ------------------------ Asistente de importacion ------------------------ */
+
+.wizard-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 13px;
+}
+.wizard-row:last-child { border-bottom: 0; }
+.wizard-row strong { font-size: 13.5px; }
+.wizard-row small { display: block; color: var(--muted); font-size: 11.5px; }
+.wizard-row input[type="number"] {
+    width: 64px;
+    background: #131b25;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 5px 7px;
+    font-size: 13px;
+    text-align: right;
+    min-height: 32px;
+}
+.wizard-row .times { color: var(--muted); font-size: 12px; }
+
+.wizard-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.wizard-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 12px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: #0e141c;
+}
+.wizard-chip b { font-size: 12.5px; }
+.wizard-chip span { color: var(--muted); }
+.wizard-chip.empty { border-color: rgba(239, 68, 68, .45); color: #fca5a5; }
+
+.wizard-act { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.wizard-act:last-child { border-bottom: 0; }
+.wizard-act input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
+.wizard-act .grow { flex: 1; min-width: 0; }
+.wizard-act strong { display: block; font-size: 13.5px; }
+.wizard-act small { color: var(--muted); font-size: 11.5px; }
+.wizard-act .count { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+.wizard-check {
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 12.5px;
+    display: grid;
+    gap: 6px;
+}
+.wizard-check.bad { color: #fecaca; background: rgba(239, 68, 68, .12); border: 1px solid rgba(239, 68, 68, .4); }
+.wizard-check.good { color: #bbf7d0; background: rgba(34, 197, 94, .10); border: 1px solid rgba(34, 197, 94, .35); }
+.wizard-check strong { font-size: 13px; }
+.wizard-check ul { margin: 0; padding-left: 18px; }

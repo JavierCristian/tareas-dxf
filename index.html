@@ -132,6 +132,7 @@
                 <div id="progress-summary" class="progress-summary"></div>
                 <div class="layer-actions">
                     <button class="ghost small" id="btn-new-activity">+ Actividad</button>
+                    <button class="ghost small" id="btn-wizard" hidden>Armar desde el plano</button>
                     <button class="ghost small" id="btn-clear-activity" hidden>Ver todo el plano</button>
                     <button class="ghost small" id="btn-toggle-filters">Filtros</button>
                 </div>
@@ -231,6 +232,44 @@
             </section>
         </aside>
     </main>
+</div>
+
+<!-- --------------------------- Asistente de importacion --------------------------- -->
+<div id="wizard-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="wizard-modal-title">
+    <div class="modal-card">
+        <header class="modal-head">
+            <h2 id="wizard-modal-title">Armar la obra desde el plano</h2>
+            <button class="icon-btn" data-close="wizard-modal" aria-label="Cerrar">✕</button>
+        </header>
+        <form id="wizard-form" class="form">
+            <p class="modal-hint" id="wizard-intro"></p>
+
+            <div class="linked">
+                <div class="linked-head"><strong>Tipos de zanja</strong><span class="muted">ancho × profundidad</span></div>
+                <div id="wizard-trenches"></div>
+            </div>
+
+            <div class="linked">
+                <div class="linked-head"><strong>Circuitos</strong><span id="wizard-circuit-count" class="muted"></span></div>
+                <div id="wizard-circuits" class="wizard-chips"></div>
+            </div>
+
+            <div class="linked">
+                <div class="linked-head"><strong>Actividades a crear</strong><span class="muted">destoca las que no controles</span></div>
+                <div id="wizard-activities"></div>
+            </div>
+
+            <div id="wizard-check"></div>
+            <p id="wizard-skipped" class="muted"></p>
+
+            <footer class="modal-foot">
+                <button type="button" class="btn" data-close="wizard-modal">Ahora no</button>
+                <div>
+                    <button type="submit" class="btn primary" id="btn-wizard-create">Crear la obra</button>
+                </div>
+            </footer>
+        </form>
+    </div>
 </div>
 
 <!-- ------------------------------ Parte diario ------------------------------ -->

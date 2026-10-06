@@ -34,12 +34,96 @@ sin servidor ni base de datos remota.
     (ver mas abajo).
 11. **Carga tramos desde una capa** completa, de una vez, en lugar de ir
     elemento por elemento.
-12. **Emite el parte diario** de la obra: lo ejecutado ese dia, lo programado
+12. **Arma la obra entera desde el plano** cuando el DXF viene clasificado por
+    tipo de zanja y por circuito: crea las actividades encadenadas y todos sus
+    tramos, cada uno con su nombre de terreno y su seccion, y avisa si alguna
+    zanja se queda corta para los circuitos que pasan por ella (ver mas abajo).
+13. **Emite el parte diario** de la obra: lo ejecutado ese dia, lo programado
     para el siguiente, el rendimiento real, la curva de avance y el plano,
     listo para imprimir o enviar (ver mas abajo).
-13. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar tareas,
+14. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar tareas,
     recursos y ubicaciones a CSV, o una copia completa en `.json` que incluye el
     plano.
+
+## Armar la obra desde el plano
+
+Cargar a mano los tramos de un parque eolico son varios cientos de tareas. Si
+el DXF viene clasificado con la convencion de abajo, al importarlo se abre un
+asistente que arma la obra completa de una vez. Tambien se vuelve a abrir con
+**Armar desde el plano**, en la pestana *Tareas*.
+
+### Como nombrar las capas en AutoCAD
+
+| Capa | Que es |
+| --- | --- |
+| `ZANJA-TA` `ZANJA-TB` `ZANJA-TC` | tipo de zanja |
+| `CRUCE-TA` `CRUCE-TB` `CRUCE-TC` | cruce de camino, entubado y hormigonado |
+| `MT-C01-WTG10-WTG09` | circuito de media tension, por tramo |
+| `FO-C01-WTG10-WTG09` | fibra optica, mismo patron (opcional) |
+
+El tipo lleva su seccion y las triadas que admite:
+
+| Tipo | Ancho × profundidad | Triadas |
+| --- | --- | --- |
+| TA | 0,60 × 1,10 m | 1 |
+| TB | 0,80 × 1,10 m | 2 |
+| TC | 1,30 × 1,10 m | 3 |
+
+Un cruce conserva el ancho y baja 20 cm mas: `CRUCE-TB` es 0,80 × 1,30 m. Las
+secciones se pueden corregir en el propio asistente antes de crear, y el
+volumen se recalcula al tiro.
+
+Las capas que no siguen el patron no estorban: quedan dibujadas como
+referencia y el asistente las lista aparte.
+
+### Que crea
+
+Nueve actividades encadenadas, cada una con su unidad de rendimiento y su
+alcance, y los tramos que le corresponden:
+
+| Actividad | Sobre | Se mide en | Va despues de |
+| --- | --- | --- | --- |
+| Excavacion | zanjas | m³/dia | — |
+| Cama de arena | zanjas | ml/dia | Excavacion |
+| Tendido de cobre | zanjas | ml/dia | Cama de arena |
+| Cable de potencia | circuitos MT | ml de conductor/dia | Tendido de cobre |
+| Fibra optica | circuitos | ml/dia | Cable de potencia |
+| Tapado y compactacion | zanjas | m³/dia | Fibra optica |
+| Excavacion de cruce | cruces | m³/dia | — |
+| Ductos y hormigonado | cruces | ml/dia | Excavacion de cruce |
+| Relleno y reposicion | cruces | ml/dia | Ductos y hormigonado |
+
+Las que no se controlen se destacan y la cadena se cierra sola: sin cama de
+arena, el cobre pasa a colgar de la excavacion.
+
+**La malla de puesta a tierra va una por zanja**, asi que el tendido de cobre
+se mide sobre las capas de zanja y no se repite por circuito. **La fibra va una
+por tramo de circuito**: usa sus capas `FO-` si estan dibujadas y, si no, sigue
+el mismo recorrido del circuito de MT.
+
+Cada tramo de zanja se llama como el recorrido que lo cruza, numerado en el
+orden en que se encuentra saliendo de la maquina: `Excavacion WTG09-SSEE 3` es
+el tercer trecho desde el aerogenerador hacia la subestacion, que es como se
+habla en terreno. Los tramos de zanja llevan ademas su ancho y profundidad, de
+modo que el programa ya sabe cuantos m³ son.
+
+### La verificacion de triadas
+
+Antes de crear nada, el asistente recorre cada zanja midiendo cuantos circuitos
+pasan de verdad por ella y lo contrasta con las triadas que su tipo admite. Si
+alguna se queda corta a lo largo de un trecho continuo, lo dice con los metros
+y los circuitos involucrados:
+
+> `ZANJA-TC, 1056 m: declara 3 triada(s) y pasan 5 circuitos (C06, C07, C08,
+> C09, C10) a lo largo de 1056 m.`
+
+Suele ser un tipo de zanja mal asignado o un circuito mal trazado, y es la
+unica forma de verlo antes de que alguien excave. Tambien avisa de las zanjas
+con seccion holgada, que llevan menos circuitos de los que su tipo admite. Se
+puede armar la obra igual y corregir el plano despues.
+
+Con un parque de 20 aerogeneradores el asistente crea 9 actividades y 246
+tramos: 20.093 m de zanja, 68.500 m³ y 35.993 m de media tension.
 
 ## Actividades y sus tramos
 
@@ -425,6 +509,7 @@ js/activities.js        actividades que agrupan las tareas y su avance
 js/schedule.js          programa maestro: rendimientos, fechas por tramo y ruta critica
 js/overlap.js           que tramos van por el mismo lugar (zanjas compartidas)
 js/report.js            parte diario: lo del dia, rendimiento real y proyeccion
+js/parque.js            esquema de capas de obra electrica y armado de la obra
 js/app.js               union de todo y logica de pantalla
 sw.js                   service worker (uso sin conexion)
 manifest.webmanifest    instalacion como aplicacion
