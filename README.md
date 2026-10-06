@@ -445,6 +445,20 @@ con su plan.
 
 ## Recursos: rendimiento, combustible y costo
 
+Una obra tiene tres clases de recurso, y las tres van **en la misma planilla**,
+separadas por la columna `tipo`:
+
+| Tipo | Que es | Abre frentes |
+| --- | --- | --- |
+| **Personal** | Maestros, ayudantes, operadores, jefatura | Si, por cuadrilla |
+| **Maquinaria** | Retroexcavadoras, cargadores, camiones | Si, una por maquina |
+| **Instalaciones** | Instalacion de faenas, banos quimicos, estaciones de sombra, comedores, bodegas | No |
+
+Las instalaciones no producen nada y no abren frentes —un bano quimico no
+excava— pero **cuestan todos los dias que estan** y **tienen que alcanzar para
+la gente**. Por eso llevan dos datos que los demas no usan: cuantas unidades
+hay y a cuanta gente atiende cada una.
+
 Cada recurso guarda, ademas de sus datos de contacto, lo que hace falta para
 controlar la obra:
 
@@ -458,6 +472,9 @@ controlar la obra:
 | Desde / hasta | Estadia en obra: una maquina que llega en noviembre no abre frente en octubre |
 | Turno | Dia, noche o mixto |
 | Operador | Quien maneja la maquina; el frente existe mientras esten los dos |
+| Cantidad | Cuantas unidades hay: cuatro banos son una ficha con 4 |
+| Atiende a | A cuanta gente sirve cada unidad |
+| Cobrado por hora, por dia o por mes | Una retro se cobra por hora; un bano, por mes |
 
 Una retroexcavadora de 60 m³/h con jornada de 9 h rinde 540 m³ al dia, cuesta
 $405.000 la jornada y consume 166,5 L. El dialogo muestra esa traduccion
@@ -480,13 +497,15 @@ combustible_l_hora;costo_hora;horometro;proxima_mantencion_h;estado;notas
 
 | Columna | Que lleva | Se acepta tambien |
 | --- | --- | --- |
-| `tipo` | Maquinaria o Personal | clase, categoria |
+| `tipo` | Maquinaria, Personal o Instalaciones | clase, categoria |
 | `nombre` | **La unica obligatoria** | recurso, equipo |
 | `cargo` | Cargo de la persona o modelo de la maquina | modelo, funcion, especialidad |
 | `identificador` | RUT, patente o numero interno | patente, rut, interno |
 | `marca` | Fabricante | brand |
 | `cuadrilla` | **Define los frentes**: los que la comparten son uno | empresa, grupo, subcontrato |
 | `telefono` | | fono, celular |
+| `cantidad` | Cuantas unidades hay de esta ficha | unidades, cant |
+| `atiende` | A cuanta gente sirve cada unidad | capacidad, personas, dotacion |
 | `rendimiento_hora` | Produccion por hora del equipo | rendimiento, produccion_hora |
 | `unidad_rendimiento` | m3, m, un | unidad, medida |
 | `horas_jornada` | Sin dato se asumen 8 | horas_dia, jornada |
@@ -495,7 +514,8 @@ combustible_l_hora;costo_hora;horometro;proxima_mantencion_h;estado;notas
 | `hasta` | Cuando se retira | termino, salida, retiro |
 | `operador` | Nombre o RUT de quien maneja la maquina | operario, conductor, maquinista |
 | `combustible_l_hora` | Litros por hora | combustible, consumo |
-| `costo_hora` | | valor_hora, tarifa_hora |
+| `costo_hora` | El valor, sea por hora, dia o mes | valor_hora, tarifa_hora |
+| `unidad_costo` | Por hora, Por dia o Por mes | cobro, periodo_costo |
 | `horometro` | Horas o kilometraje actual | kilometraje |
 | `proxima_mantencion_h` | En horas de horometro | mantencion, proximo_servicio |
 | `estado` | Activo o Inactivo | activo, vigente |
@@ -539,6 +559,31 @@ razon para rehacerle el plan a nadie. Pero se dice.
 El turno se guarda y se muestra, y por ahora no cambia las fechas: el
 rendimiento de la actividad lo pone el usuario en m³ o metros por dia, asi que
 un segundo turno se refleja subiendo ese numero, no partiendo el frente en dos.
+
+### Instalaciones de faena
+
+Una instalacion se carga como cualquier otro recurso, con `tipo` = Instalaciones.
+Lo que cambia es que **no abre frentes** —asignarle un bano a la excavacion no
+le suma una cuadrilla— y que **se cobra por estar**, no por trabajar:
+
+```
+Instalaciones;Bano quimico;Servicios higienicos;;;4;10;;;;;12-10-2026;;;;180000;Por mes;Activo
+Instalaciones;Estacion de sombra;Proteccion UV;;;3;25;;;;;12-10-2026;;;;12000;Por dia;Activo
+Instalaciones;Container comedor;Instalacion de faenas;;;1;40;;;;;12-10-2026;;;;450000;Por mes;Activo
+```
+
+Su costo entra al total de la obra por los dias corridos que esta en obra —su
+estadia, o la obra entera si no la declara— y se muestra aparte en el resumen
+del programa, porque es gasto de faena y no de ningun tramo.
+
+Y con **atiende** se contrasta contra la dotacion: se busca el dia de mas gente
+en obra, contando a los operadores de cada maquina aunque solo figuren colgando
+de ella, y se compara con lo instalado.
+
+> `Bano quimico: 1 para 3 personas, y el 13/10 hay 5 en obra. Faltan 1.`
+
+El numero de personas por unidad lo pone el usuario: la aplicacion no decide
+cuantos banos exige la norma, solo avisa cuando lo declarado no alcanza.
 
 ## Recursos repartidos en el plano
 

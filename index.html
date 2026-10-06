@@ -157,6 +157,7 @@
                 <div class="layer-actions">
                     <button class="ghost small" id="btn-new-person">+ Personal</button>
                     <button class="ghost small" id="btn-new-machine">+ Maquinaria</button>
+                    <button class="ghost small" id="btn-new-facility">+ Instalacion</button>
                     <button class="ghost small" id="btn-new-place">+ Punto en el plano</button>
                     <button class="ghost small" id="btn-import-resources">Importar CSV</button>
                     <input type="file" id="resource-csv-input" accept=".csv,text/csv,text/plain" hidden>
@@ -470,12 +471,25 @@
                         <select id="resource-rate-unit"></select>
                     </label>
                 </div>
-                <div class="form-row">
+                <div class="form-row" id="resource-hours-row">
                     <label>Horas por jornada
                         <input type="number" id="resource-hours" min="1" max="24" step="0.5" placeholder="8">
                     </label>
-                    <label>Costo por hora
+                </div>
+                <div class="form-row">
+                    <label>Costo
                         <input type="number" id="resource-cost" min="0" step="any" placeholder="Ej: 45000">
+                    </label>
+                    <label>Cobrado
+                        <select id="resource-cost-unit"></select>
+                    </label>
+                </div>
+                <div class="form-row" id="resource-facility-row">
+                    <label>Cuantas unidades hay
+                        <input type="number" id="resource-quantity" min="1" step="1" placeholder="Ej: 4">
+                    </label>
+                    <label>Atiende a (personas c/u)
+                        <input type="number" id="resource-serves" min="0" step="1" placeholder="Ej: 10">
                     </label>
                 </div>
                 <div class="form-row" id="resource-fuel-row">

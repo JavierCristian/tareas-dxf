@@ -25,7 +25,7 @@ import {
     RESOURCE_TYPES, ROLE_HINTS, CODE_HINTS, typeOf, createResource, normalizeResource,
     workload, resourcesToCsv, resourcesCsvTemplate, resourcesFromCsv,
     RESOURCE_RATE_UNITS, rateUnitLabel, dailyRateOf, hoursPerDayOf, spendOf,
-    SHIFTS, shiftLabel
+    SHIFTS, shiftLabel, COST_UNITS, costUnitOf, dailyCostOf, countOf, servesOf
 } from './resources.js';
 import {
     createPlace, normalizePlace, placeIcon, placeColor, placeTitle, placesOf, placesAt, placesToCsv
@@ -56,7 +56,7 @@ import {
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '20';
+export const APP_VERSION = '21';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -2686,6 +2686,12 @@ function renderProgram(schedule) {
     if ((schedule.late || []).length > 4) {
         avisos.push(`Y ${schedule.late.length - 4} tramo(s) mas quedan fuera de la estadia de su frente.`);
     }
+    // Las instalaciones no producen, pero tienen que alcanzar el dia de mas gente.
+    const faenas = schedule.facilities;
+    for (const row of (faenas && faenas.short ? faenas.short : [])) {
+        avisos.push(`${row.resource.name}: ${row.units} para ${row.capacity} personas, `
+            + `y el ${shortDate(faenas.peakDate)} hay ${faenas.peak} en obra. Faltan ${row.missing}.`);
+    }
     warning.hidden = !avisos.length;
     warning.textContent = avisos.join(' ');
     renderDuplicates(schedule);
@@ -2718,7 +2724,15 @@ function renderProgram(schedule) {
         obra.cost += spend.cost;
         obra.fuel += spend.fuel;
     }
-    if (obra.cost > 0) summary.append(chip(`${formatMoney(obra.cost)} en recursos`, '#22c55e'));
+    // Las instalaciones no se cargan a un tramo: se pagan por los dias que
+    // estan en obra, las ocupe quien las ocupe.
+    const faena = facilitySpend(schedule);
+    if (obra.cost > 0 || faena.cost > 0) {
+        summary.append(chip(`${formatMoney(obra.cost + faena.cost)} en recursos`, '#22c55e'));
+    }
+    if (faena.cost > 0) {
+        summary.append(chip(`${formatMoney(faena.cost)} de instalaciones`, '#4ade80'));
+    }
     if (obra.fuel > 0) summary.append(chip(`${formatNumber(obra.fuel)} L de combustible`, '#f59e0b'));
 
     const span = Math.max(1, daysBetween(schedule.from, schedule.to) + 1);
@@ -2796,9 +2810,60 @@ function tramoSpend(task, entry) {
 }
 
 /** Suma de costo y combustible de todos los tramos de una actividad. */
+/**
+ * Lo que cuestan las instalaciones de faena. No se cargan a ningun tramo —un
+ * bano no excava— sino a los dias corridos que estan en obra, que es como se
+ * arriendan. Si traen estadia manda ella; si no, la obra entera.
+ */
+function facilitySpend(schedule) {
+    const total = { cost: 0, days: 0 };
+    for (const resource of state.resources) {
+        if (resource.type !== 'instalacion' || resource.active === false) continue;
+        const from = resource.from && resource.from > schedule.from ? resource.from : schedule.from;
+        const to = resource.to && resource.to < schedule.to ? resource.to : schedule.to;
+        const days = daysBetween(from, to) + 1;
+        if (!(days > 0)) continue;
+        total.cost += dailyCostOf(resource) * countOf(resource) * days;
+        if (days > total.days) total.days = days;
+    }
+    return total;
+}
+
+/**
+ * La gente y las maquinas de una actividad, contando a los operadores de esas
+ * maquinas: el operador esta en obra aunque no se le haya asignado aparte.
+ */
+function activityCrew(activity) {
+    const found = new Map();
+    for (const id of (activity && activity.resources) || []) {
+        const resource = resourceById(id);
+        if (!resource || resource.active === false) continue;
+        found.set(resource.id, resource);
+        const operator = resource.operator ? resourceById(resource.operator) : null;
+        if (operator && operator.active !== false) found.set(operator.id, operator);
+    }
+    return [...found.values()];
+}
+
 function activitySpend(activityId, schedule) {
     const total = { cost: 0, fuel: 0, hours: 0 };
     let any = false;
+
+    // La maquinaria y el personal de la actividad cuestan los dias que ella
+    // dura, no los de un tramo: estan en obra mientras la actividad dure.
+    const activity = state.activities.find((a) => a.id === activityId);
+    const entry = schedule.activities.get(activityId);
+    if (activity && entry && !entry.empty && entry.days > 0) {
+        const own = activityCrew(activity).filter((r) => r.type !== 'instalacion');
+        if (own.length) {
+            const spend = spendOf(own, entry.days);
+            total.cost += spend.cost;
+            total.fuel += spend.fuel;
+            total.hours += spend.hours;
+            any = true;
+        }
+    }
+
     for (const task of tasksOf(activityId, state.tasks)) {
         const spend = tramoSpend(task, schedule.tasks.get(task.id));
         if (!spend) continue;
@@ -4306,7 +4371,12 @@ function renderResources() {
         const daily = dailyRateOf(resource);
         if (daily) meta.append(tag(`${formatNumber(daily.perHour)} ${rateUnitLabel(daily.unit)}/h`));
         if (resource.fuel > 0) meta.append(tag(`${formatNumber(resource.fuel)} L/h`));
-        if (resource.cost > 0) meta.append(tag(`${formatMoney(resource.cost)}/h`));
+        if (resource.cost > 0) meta.append(tag(`${formatMoney(resource.cost)}${costUnitOf(resource).short}`));
+        if (countOf(resource) > 1) meta.append(tag(`${countOf(resource)} unidades`));
+        if (servesOf(resource) > 0) {
+            // Personas: siempre enteras, nunca "atiende a 3,00".
+            meta.append(tag(`Atiende a ${Math.round(countOf(resource) * servesOf(resource))}`));
+        }
         if (resource.shift) meta.append(tag(`Turno ${shiftLabel(resource.shift).toLowerCase()}`));
         // La estadia solo se muestra cuando no es toda la obra.
         if (resource.from || resource.to) {
@@ -4387,11 +4457,15 @@ function updateResourceHints() {
     $('#resource-code').placeholder = CODE_HINTS[type] || '';
     // El rendimiento, el combustible y la mantencion son cosa de maquinaria.
     const machine = type === 'maquina';
+    const facility = type === 'instalacion';
     $('#resource-rate-row').hidden = !machine;
     $('#resource-fuel-row').hidden = !machine;
     $('#resource-service-row').hidden = !machine;
     // Y el operador solo lo lleva una maquina.
     $('#resource-operator-label').hidden = !machine;
+    // Una instalacion no trabaja horas ni turnos: esta, y por estar se paga.
+    $('#resource-hours-row').hidden = facility;
+    $('#resource-facility-row').hidden = !facility;
     renderResourceRateHint();
 }
 
@@ -4440,6 +4514,13 @@ function openResourceModal(resource, isNew = false) {
     $('#resource-service').value = resource.nextService > 0 ? String(resource.nextService) : '';
     $('#resource-from').value = resource.from || '';
     $('#resource-to').value = resource.to || '';
+    $('#resource-quantity').value = String(countOf(resource));
+    $('#resource-serves').value = resource.serves > 0 ? String(resource.serves) : '';
+
+    const costUnit = $('#resource-cost-unit');
+    costUnit.innerHTML = '';
+    for (const option of COST_UNITS) costUnit.append(new Option(option.label, option.id));
+    costUnit.value = costUnitOf(resource).id;
 
     const shift = $('#resource-shift');
     shift.innerHTML = '';
@@ -4475,6 +4556,8 @@ function wireResources() {
         openResourceModal(createResource(state.project.id, { type: 'persona' }), true));
     $('#btn-new-machine').addEventListener('click', () =>
         openResourceModal(createResource(state.project.id, { type: 'maquina' }), true));
+    $('#btn-new-facility').addEventListener('click', () =>
+        openResourceModal(createResource(state.project.id, { type: 'instalacion', costUnit: 'mes' }), true));
     $('#resource-search').addEventListener('input', renderResources);
     $('#resource-type').addEventListener('change', updateResourceHints);
     for (const id of ['#resource-rate', '#resource-rate-unit', '#resource-hours', '#resource-cost', '#resource-fuel']) {
@@ -4534,6 +4617,9 @@ function wireResources() {
         draft.from = $('#resource-from').value || '';
         draft.to = $('#resource-to').value || '';
         draft.shift = $('#resource-shift').value || '';
+        draft.costUnit = $('#resource-cost-unit').value || '';
+        draft.quantity = Math.max(1, Math.round(Number($('#resource-quantity').value) || 1));
+        draft.serves = Math.max(0, Math.round(Number($('#resource-serves').value) || 0));
         draft.operator = draft.type === 'maquina' ? ($('#resource-operator').value || '') : '';
         if (!draft.name) return;
 

@@ -26,7 +26,7 @@
 import { isoToDate, addDays, daysBetween, todayISO } from './timeline.js';
 import { taskQuantity } from './tasks.js';
 import { pathsOf, pathsShareRoute } from './overlap.js';
-import { crewWindow } from './resources.js';
+import { crewWindow, countOf, servesOf } from './resources.js';
 
 /* --------------------------- dias de trabajo ----------------------------- */
 
@@ -201,6 +201,8 @@ export function frontList(activity, resources = []) {
     const crews = new Map();
     for (const resource of resources) {
         if (!assigned.has(resource.id) || resource.active === false) continue;
+        // Un bano quimico no abre un frente de excavacion.
+        if (resource.type === 'instalacion') continue;
         // Los que comparten cuadrilla son un frente; el que no la trae, uno suyo.
         const crew = String(resource.group || '').trim().toLowerCase();
         const key = crew || `solo:${resource.id}`;
@@ -726,10 +728,67 @@ export function computeSchedule(activities, tasks, options = {}) {
             .filter(([, entry]) => entry.afterCrewLeaves)
             .map(([id, entry]) => ({ id, crew: entry.crewName, leaves: entry.afterCrewLeaves, end: entry.end })),
         unmanned: unmannedMachines(activities, resources),
+        facilities: facilityCheck(activities, resources, byActivity, cal),
         context: ctx,
         from: projectStart,
         to: projectEnd
     };
+}
+
+/**
+ * Si las instalaciones alcanzan para la gente que va a haber en obra.
+ *
+ * Los banos, las estaciones de sombra y los comedores no producen nada, pero
+ * tienen que dar abasto el dia de mayor dotacion. Se busca ese dia —el que mas
+ * actividades tiene andando a la vez— y se compara con lo instalado.
+ */
+export function facilityCheck(activities, resources = [], byActivity, cal) {
+    const facilities = resources.filter((r) => r.type === 'instalacion' && r.active !== false && servesOf(r) > 0);
+    if (!facilities.length) return null;
+
+    // Dotacion maxima: el dia en que coinciden mas actividades andando.
+    const spans = [];
+    for (const activity of activities) {
+        const entry = byActivity.get(activity.id);
+        if (!entry || entry.empty) continue;
+        // Cuenta la gente asignada y los operadores de sus maquinas: el
+        // operador esta en obra aunque solo figure colgando de su excavadora.
+        const own = new Map();
+        for (const id of activity.resources || []) {
+            const resource = resources.find((r) => r.id === id);
+            if (!resource || resource.active === false) continue;
+            if (resource.type === 'persona') own.set(resource.id, resource);
+            const operator = resource.operator ? resources.find((r) => r.id === resource.operator) : null;
+            if (operator && operator.active !== false) own.set(operator.id, operator);
+        }
+        if (own.size) spans.push({ start: entry.start, end: entry.end, people: [...own.values()] });
+    }
+    if (!spans.length) return null;
+
+    let peak = 0;
+    let peakDate = '';
+    for (const span of spans) {
+        // Basta mirar los dias en que algo empieza: la dotacion solo sube ahi.
+        const here = new Set();
+        for (const other of spans) {
+            if (other.start <= span.start && other.end >= span.start) {
+                for (const person of other.people) here.add(person.id);
+            }
+        }
+        if (here.size > peak) { peak = here.size; peakDate = span.start; }
+    }
+    if (!peak) return null;
+
+    const rows = facilities.map((resource) => {
+        const capacity = countOf(resource) * servesOf(resource);
+        return {
+            resource,
+            units: countOf(resource),
+            capacity,
+            missing: capacity >= peak ? 0 : Math.ceil((peak - capacity) / servesOf(resource))
+        };
+    });
+    return { peak, peakDate, rows, short: rows.filter((r) => r.missing > 0) };
 }
 
 /**

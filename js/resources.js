@@ -12,18 +12,57 @@ import { parseCsv, normalizeHeader, toNumber, toBoolean } from './csv.js';
 
 export const RESOURCE_TYPES = [
     { id: 'persona', label: 'Personal', plural: 'Personal', icon: '👷', color: '#38bdf8' },
-    { id: 'maquina', label: 'Maquinaria', plural: 'Maquinaria', icon: '🚜', color: '#f59e0b' }
+    { id: 'maquina', label: 'Maquinaria', plural: 'Maquinaria', icon: '🚜', color: '#f59e0b' },
+    // Lo que sostiene la obra sin producir: instalacion de faenas, banos,
+    // estaciones de sombra, comedores, bodegas. No abren frentes de trabajo,
+    // pero cuestan todos los dias que estan y tienen que alcanzar para la gente.
+    { id: 'instalacion', label: 'Instalaciones', plural: 'Instalaciones', icon: '🚻', color: '#4ade80' }
 ];
+
+/** Como se cobra un recurso. La maquinaria por hora; un bano, por dia o por mes. */
+export const COST_UNITS = [
+    { id: 'hora', label: 'Por hora', short: '/h', perDay: (resource) => hoursPerDayOf(resource) },
+    { id: 'dia', label: 'Por dia', short: '/dia', perDay: () => 1 },
+    { id: 'mes', label: 'Por mes', short: '/mes', perDay: () => 1 / 30 }
+];
+
+export function costUnitOf(resource) {
+    const raw = resource && resource.costUnit;
+    const found = COST_UNITS.find((u) => u.id === raw);
+    if (found) return found;
+    // Una instalacion que no dice nada se cobra por dia, que es lo habitual.
+    return COST_UNITS.find((u) => u.id === (resource && resource.type === 'instalacion' ? 'dia' : 'hora'));
+}
+
+/** Lo que cuesta un recurso en un dia de obra, sea como sea que se cobre. */
+export function dailyCostOf(resource) {
+    const unit = costUnitOf(resource);
+    return positive(resource && resource.cost) * unit.perDay(resource);
+}
+
+/** Cuantas unidades hay de este recurso: tres banos quimicos son uno con 3. */
+export function countOf(resource) {
+    const value = Number(resource && resource.quantity);
+    return Number.isFinite(value) && value >= 1 ? Math.round(value) : 1;
+}
+
+/** A cuanta gente atiende cada unidad, para saber si alcanza. */
+export function servesOf(resource) {
+    const value = Number(resource && resource.serves);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+}
 
 /** Etiquetas del campo "cargo" segun el tipo, solo para orientar al usuario. */
 export const ROLE_HINTS = {
     persona: 'Ej: maestro albanil, jefe de terreno, ayudante',
-    maquina: 'Ej: retroexcavadora CAT 320, camion tolva'
+    maquina: 'Ej: retroexcavadora CAT 320, camion tolva',
+    instalacion: 'Ej: servicios higienicos, proteccion UV, instalacion de faenas'
 };
 
 export const CODE_HINTS = {
     persona: 'RUT o numero interno',
-    maquina: 'Patente o numero de equipo'
+    maquina: 'Patente o numero de equipo',
+    instalacion: 'Numero de contrato o de arriendo'
 };
 
 export function typeOf(id) {
@@ -72,10 +111,14 @@ export function spendOf(resources, days) {
     const total = { cost: 0, fuel: 0, hours: 0 };
     if (!(days > 0)) return total;
     for (const resource of resources) {
-        const hours = hoursPerDayOf(resource) * days;
-        total.hours += hours;
-        total.cost += positive(resource.cost) * hours;
-        total.fuel += positive(resource.fuel) * hours;
+        const units = countOf(resource);
+        // Las instalaciones no trabajan horas: estan, y por estar se pagan.
+        if (resource.type !== 'instalacion') {
+            const hours = hoursPerDayOf(resource) * days * units;
+            total.hours += hours;
+            total.fuel += positive(resource.fuel) * hours;
+        }
+        total.cost += dailyCostOf(resource) * days * units;
     }
     return total;
 }
@@ -98,6 +141,9 @@ export function createResource(projectId, patch = {}) {
         fuel: 0,                       // litros de combustible por hora
         cost: 0,                       // costo por hora
         brand: '',                     // marca
+        quantity: 1,   // cuantas unidades hay: tres banos quimicos son uno con 3
+        serves: 0,     // a cuanta gente atiende cada unidad, si corresponde
+        costUnit: '',  // hora, dia o mes; vacio, lo que toque segun el tipo
         hourmeter: null,               // horometro o kilometraje actual
         nextService: null,             // proxima mantencion, en horas
         from: '',      // desde cuando esta en obra (YYYY-MM-DD); vacio, desde el inicio
@@ -168,10 +214,10 @@ function csvNumber(value) {
    importar, de modo que el archivo exportado se puede editar y volver a subir. */
 export const RESOURCE_COLUMNS = [
     'tipo', 'nombre', 'cargo', 'identificador', 'marca', 'cuadrilla', 'telefono',
-    'rendimiento_hora', 'unidad_rendimiento', 'horas_jornada', 'turno',
-    'desde', 'hasta', 'operador',
-    'combustible_l_hora', 'costo_hora', 'horometro', 'proxima_mantencion_h',
-    'estado', 'notas'
+    'cantidad', 'atiende', 'rendimiento_hora', 'unidad_rendimiento', 'horas_jornada',
+    'turno', 'desde', 'hasta', 'operador',
+    'combustible_l_hora', 'costo_hora', 'unidad_costo',
+    'horometro', 'proxima_mantencion_h', 'estado', 'notas'
 ];
 
 /** Turnos que se reconocen al leer la planilla. */
@@ -234,6 +280,8 @@ export function resourcesToCsv(resources, tasks) {
             resource.brand,
             resource.group,
             resource.phone,
+            countOf(resource),
+            csvNumber(resource.serves),
             csvNumber(rate.value),
             rate.unit || '',
             csvNumber(resource.hoursPerDay),
@@ -243,6 +291,7 @@ export function resourcesToCsv(resources, tasks) {
             operatorName(resource, resources),
             csvNumber(resource.fuel),
             csvNumber(resource.cost),
+            costUnitOf(resource).label,
             csvNumber(resource.hourmeter),
             csvNumber(resource.nextService),
             resource.active ? 'Activo' : 'Inactivo',
@@ -261,15 +310,29 @@ export function resourcesCsvTemplate() {
     // combustible_l_hora;costo_hora;horometro;proxima_mantencion_h;estado;notas
     const ejemplos = [
         ['Maquinaria', 'Retroexcavadora CAT 320', 'Excavacion de zanja', 'PP-1234', 'Caterpillar', '', '',
-            '60', 'm3', '9', 'Dia', '2026-10-12', '', 'Juan Perez', '18', '45000', '4820', '5000', 'Activo', ''],
+            '1', '', '60', 'm3', '9', 'Dia', '2026-10-12', '', 'Juan Perez',
+            '18', '45000', 'Por hora', '4820', '5000', 'Activo', ''],
         ['Maquinaria', 'Cargador frontal 950', 'Carguio', 'RR-5678', 'Caterpillar', '', '',
-            '80', 'm3', '9', 'Noche', '2026-11-03', '2027-02-28', 'Pedro Soto', '22', '52000', '3100', '3500', 'Activo', 'Llega en noviembre'],
+            '1', '', '80', 'm3', '9', 'Noche', '2026-11-03', '2027-02-28', 'Pedro Soto',
+            '22', '52000', 'Por hora', '3100', '3500', 'Activo', 'Llega en noviembre'],
         ['Personal', 'Juan Perez', 'Operador', '12.345.678-9', '', '', '+56 9 1234 5678',
-            '', '', '9', 'Dia', '', '', '', '', '12000', '', '', 'Activo', ''],
+            '1', '', '', '', '9', 'Dia', '', '', '',
+            '', '12000', 'Por hora', '', '', 'Activo', ''],
         ['Personal', 'Pedro Soto', 'Operador', '13.456.789-0', '', '', '',
-            '', '', '9', 'Noche', '2026-11-03', '', '', '', '12000', '', '', 'Activo', ''],
+            '1', '', '', '', '9', 'Noche', '2026-11-03', '', '',
+            '', '12000', 'Por hora', '', '', 'Activo', ''],
         ['Personal', 'Luis Rojas', 'Maestro electrico', '14.567.890-1', '', 'Cuadrilla 1', '',
-            '', '', '9', 'Dia', '', '', '', '', '9500', '', '', 'Activo', '']
+            '1', '', '', '', '9', 'Dia', '', '', '',
+            '', '9500', 'Por hora', '', '', 'Activo', ''],
+        ['Instalaciones', 'Bano quimico', 'Servicios higienicos', '', '', '', '',
+            '4', '10', '', '', '', '', '2026-10-12', '', '',
+            '', '180000', 'Por mes', '', '', 'Activo', 'Retiro semanal'],
+        ['Instalaciones', 'Estacion de sombra e hidratacion', 'Proteccion UV', '', '', '', '',
+            '3', '25', '', '', '', '', '2026-10-12', '', '',
+            '', '12000', 'Por dia', '', '', 'Activo', ''],
+        ['Instalaciones', 'Container comedor', 'Instalacion de faenas', '', '', '', '',
+            '1', '40', '', '', '', '', '2026-10-12', '', '',
+            '', '450000', 'Por mes', '', '', 'Activo', '']
     ];
     const filas = ejemplos.map((fila) => fila.map(csvCell).join(';'));
     return '\ufeff' + [RESOURCE_COLUMNS.join(';'), ...filas].join('\r\n');
@@ -285,6 +348,9 @@ export function resourcesCsvTemplate() {
 const COLUMN_ALIASES = {
     id: ['id', 'codigo_interno'],
     type: ['tipo', 'type', 'clase', 'categoria'],
+    quantity: ['cantidad', 'unidades', 'cant', 'numero', 'qty'],
+    serves: ['atiende', 'atiende_personas', 'capacidad', 'personas', 'dotacion'],
+    costUnit: ['unidad_costo', 'costo_unidad', 'cobro', 'periodo_costo'],
     name: ['nombre', 'name', 'recurso', 'equipo'],
     role: ['cargo', 'modelo', 'role', 'funcion', 'especialidad'],
     code: ['identificador', 'patente', 'rut', 'code', 'numero_interno', 'interno'],
@@ -310,6 +376,16 @@ function pick(row, field) {
     for (const alias of COLUMN_ALIASES[field] || []) {
         if (row[alias] !== undefined && row[alias] !== '') return row[alias];
     }
+    return '';
+}
+
+/** Como se cobra, escrito como venga: /h, por dia, mensual, arriendo mes... */
+function readCostUnit(value) {
+    const text = normalizeHeader(value);
+    if (!text) return '';
+    if (text.includes('mes') || text.startsWith('m')) return 'mes';
+    if (text.includes('dia') || text.startsWith('d')) return 'dia';
+    if (text.includes('hora') || text.startsWith('h')) return 'hora';
     return '';
 }
 
@@ -349,6 +425,8 @@ function readType(value) {
     const text = normalizeHeader(value);
     if (!text) return 'persona';
     if (['maquina', 'maquinaria', 'equipo', 'equipos', 'machine', 'vehiculo'].includes(text)) return 'maquina';
+    if (['instalacion', 'instalaciones', 'faena', 'faenas', 'bano', 'banos', 'servicio',
+        'servicios', 'infraestructura'].includes(text)) return 'instalacion';
     return 'persona';
 }
 
@@ -407,6 +485,9 @@ export function resourcesFromCsv(text, projectId, existing = []) {
             group: String(pick(row, 'group') || '').slice(0, 80),
             phone: String(pick(row, 'phone') || '').slice(0, 40),
             hoursPerDay: toNumber(pick(row, 'hoursPerDay')),
+            quantity: toNumber(pick(row, 'quantity')) || 1,
+            serves: toNumber(pick(row, 'serves')) || 0,
+            costUnit: readCostUnit(pick(row, 'costUnit')),
             shift: readShift(pick(row, 'shift')),
             from: readDate(pick(row, 'from')),
             to: readDate(pick(row, 'to')),
