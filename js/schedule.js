@@ -293,14 +293,48 @@ export function autoPredecessors(task, activities, tasks, ctx) {
 
     const links = [];
     for (const before of predecessorsOf(activity)) {
-        for (const other of tasks) {
-            if (other.id === task.id || other.activityId !== before.id) continue;
-            if (shareRoute(task, other, ctx).shares) {
-                links.push({ id: other.id, lag: before.lag, auto: true });
-            }
-        }
+        const own = routeNeighbours(task, before.id, tasks, ctx, before.lag);
+        if (own.length) { links.push(...own); continue; }
+        // No hay ningun tramo de la actividad antecesora por aqui: una zanja sin
+        // circuito no tiene cable que tender. En vez de dejar el tramo suelto y
+        // que parta el primer dia, se sube por la cadena hasta la actividad mas
+        // cercana que si pase por este lugar.
+        links.push(...fallbackNeighbours(task, before, activities, tasks, ctx));
     }
     return links;
+}
+
+/** Tramos de una actividad que van por el mismo lugar que este. */
+function routeNeighbours(task, activityId, tasks, ctx, lag, fallback = false) {
+    const links = [];
+    for (const other of tasks) {
+        if (other.id === task.id || other.activityId !== activityId) continue;
+        if (shareRoute(task, other, ctx).shares) links.push({ id: other.id, lag, auto: true, fallback });
+    }
+    return links;
+}
+
+/** Primer antecesor de la cadena, hacia atras, que sí pase por este lugar. */
+function fallbackNeighbours(task, before, activities, tasks, ctx) {
+    const seen = new Set([before.id]);
+    let frontier = [before.id];
+    let guard = 0;
+    while (frontier.length && guard++ < activities.length) {
+        const next = [];
+        for (const id of frontier) {
+            const activity = activities.find((a) => a.id === id);
+            if (!activity) continue;
+            for (const up of predecessorsOf(activity)) {
+                if (seen.has(up.id)) continue;
+                seen.add(up.id);
+                const own = routeNeighbours(task, up.id, tasks, ctx, before.lag, true);
+                if (own.length) return own;
+                next.push(up.id);
+            }
+        }
+        frontier = next;
+    }
+    return [];
 }
 
 /**
@@ -323,7 +357,9 @@ function orphanOf(task, activities, tasks, ctx) {
     const declared = predecessorsOf(activity).filter((link) =>
         tasks.some((other) => other.activityId === link.id));
     if (!declared.length) return false;
-    return autoPredecessors(task, activities, tasks, ctx).length === 0;
+    // Se avisa igual aunque la cadena haya encontrado un sustituto mas atras:
+    // que una zanja no tenga cable encima suele ser un circuito sin dibujar.
+    return declared.every((link) => !routeNeighbours(task, link.id, tasks, ctx, link.lag).length);
 }
 
 /**

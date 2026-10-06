@@ -2467,8 +2467,9 @@ function renderProgram(schedule) {
     }
     if (schedule.orphans.length) {
         const names = schedule.orphans.map((id) => (taskById(id) || {}).title || id);
-        avisos.push(`Sin antecesor en su ubicacion (parten libres): ${names.join(', ')}. `
-            + `Sube la tolerancia si sus trazas corren a mas de ${shareTolerance()} m, o enlazalos a mano.`);
+        avisos.push(`Su actividad antecesora no pasa por aqui: ${names.join(', ')}. `
+            + 'Se enlazaron a la actividad anterior de la cadena que si pasa, pero suele ser '
+            + `una zanja sin su circuito dibujado. Sube la tolerancia si las trazas corren a mas de ${shareTolerance()} m, o enlazalos a mano.`);
     }
     warning.hidden = !avisos.length;
     warning.textContent = avisos.join(' ');
