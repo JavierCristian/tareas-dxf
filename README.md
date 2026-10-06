@@ -455,6 +455,9 @@ controlar la obra:
 | Combustible (L por hora) | Consumo estimado de la obra |
 | Costo por hora | Costo de la obra, por tramo y por actividad |
 | Marca, horometro, proxima mantencion | Control del equipo; avisa cuando faltan menos de 250 h |
+| Desde / hasta | Estadia en obra: una maquina que llega en noviembre no abre frente en octubre |
+| Turno | Dia, noche o mixto |
+| Operador | Quien maneja la maquina; el frente existe mientras esten los dos |
 
 Una retroexcavadora de 60 m³/h con jornada de 9 h rinde 540 m³ al dia, cuesta
 $405.000 la jornada y consume 166,5 L. El dialogo muestra esa traduccion
@@ -471,19 +474,71 @@ El boton **Importar CSV** de la pestaña *Recursos* lee una planilla de Excel.
 
 ```
 tipo;nombre;cargo;identificador;marca;cuadrilla;telefono;rendimiento_hora;
-unidad_rendimiento;horas_jornada;combustible_l_hora;costo_hora;horometro;
-proxima_mantencion_h;estado;notas
+unidad_rendimiento;horas_jornada;turno;desde;hasta;operador;
+combustible_l_hora;costo_hora;horometro;proxima_mantencion_h;estado;notas
 ```
 
-De todas, **solo "nombre" es obligatoria**; el orden no importa y los nombres
-admiten variantes (*patente* o *rut* por identificador, *valor_hora* por costo,
-*consumo* por combustible, y asi). Lee separador punto y coma, coma o
-tabulacion, y entiende los numeros como los escribe una planilla en espanol:
-`45.000` son cuarenta y cinco mil y `18,5` son dieciocho coma cinco.
+| Columna | Que lleva | Se acepta tambien |
+| --- | --- | --- |
+| `tipo` | Maquinaria o Personal | clase, categoria |
+| `nombre` | **La unica obligatoria** | recurso, equipo |
+| `cargo` | Cargo de la persona o modelo de la maquina | modelo, funcion, especialidad |
+| `identificador` | RUT, patente o numero interno | patente, rut, interno |
+| `marca` | Fabricante | brand |
+| `cuadrilla` | **Define los frentes**: los que la comparten son uno | empresa, grupo, subcontrato |
+| `telefono` | | fono, celular |
+| `rendimiento_hora` | Produccion por hora del equipo | rendimiento, produccion_hora |
+| `unidad_rendimiento` | m3, m, un | unidad, medida |
+| `horas_jornada` | Sin dato se asumen 8 | horas_dia, jornada |
+| `turno` | Dia, Noche o Mixto | shift, horario |
+| `desde` | Cuando entra a la obra | inicio, entrada, llegada |
+| `hasta` | Cuando se retira | termino, salida, retiro |
+| `operador` | Nombre o RUT de quien maneja la maquina | operario, conductor, maquinista |
+| `combustible_l_hora` | Litros por hora | combustible, consumo |
+| `costo_hora` | | valor_hora, tarifa_hora |
+| `horometro` | Horas o kilometraje actual | kilometraje |
+| `proxima_mantencion_h` | En horas de horometro | mantencion, proximo_servicio |
+| `estado` | Activo o Inactivo | activo, vigente |
+| `notas` | | observaciones, comentarios |
+
+De todas, **solo "nombre" es obligatoria** y el orden no importa. Lee separador
+punto y coma, coma o tabulacion, y entiende los numeros como los escribe una
+planilla en espanol: `45.000` son cuarenta y cinco mil y `18,5` son dieciocho
+coma cinco. Las fechas se escriben como se escriben aca: `12-10-2026`,
+`12/10/2026` o `2026-10-12`, las tres sirven.
+
+El **operador se escribe por su nombre o su RUT**, no por un codigo interno, y
+puede ir en cualquier fila de la misma planilla: se resuelve al terminar de
+leerla, asi que da lo mismo si la persona aparece despues que su maquina. Dejar
+`desde` y `hasta` en blanco significa que el recurso esta toda la obra, que es
+lo normal en la mayoria.
 
 Las filas cuyo identificador o nombre ya existe **actualizan** al recurso en vez
 de duplicarlo, de modo que se puede exportar con *Exportar CSV*, corregir en
 Excel y volver a subir.
+
+### Estadia, turnos y operadores en el programa
+
+La estadia no es un dato de archivo: **el frente no existe antes de que llegue
+su gente**. Una excavadora con `desde` en noviembre no toma tramos en octubre,
+y si tiene operador asignado la ventana es la interseccion de las dos, porque
+el frente necesita a los dos. Sobre el parque, con tres retros y una que entra
+el 3 de noviembre, esa tercera toma 10 tramos mientras las otras dos toman 18
+cada una.
+
+Lo que se sale de la estadia se avisa, no se esconde:
+
+> `"Excavacion WTG13-SSEE 3" termina el 01/11, despues de que Retro CAT A se va
+> de la obra el 30/10.`
+
+> `Retro Komatsu no tiene operador y esta en "Excavacion".`
+
+Una maquina sin operador **sigue contando como frente**: falta un dato, no es
+razon para rehacerle el plan a nadie. Pero se dice.
+
+El turno se guarda y se muestra, y por ahora no cambia las fechas: el
+rendimiento de la actividad lo pone el usuario en m³ o metros por dia, asi que
+un segundo turno se refleja subiendo ese numero, no partiendo el frente en dos.
 
 ## Recursos repartidos en el plano
 

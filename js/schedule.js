@@ -26,6 +26,7 @@
 import { isoToDate, addDays, daysBetween, todayISO } from './timeline.js';
 import { taskQuantity } from './tasks.js';
 import { pathsOf, pathsShareRoute } from './overlap.js';
+import { crewWindow } from './resources.js';
 
 /* --------------------------- dias de trabajo ----------------------------- */
 
@@ -184,17 +185,40 @@ export function scopeOf(activity) {
  * @returns {number|null} null si la actividad no tiene recursos asignados.
  */
 export function frontsOf(activity, resources = []) {
+    const own = frontList(activity, resources);
+    return own.length ? own.length : null;
+}
+
+/**
+ * Los frentes de una actividad, uno a uno, con la ventana en que cada uno esta
+ * disponible. Una maquina que llega en noviembre no abre un frente en octubre,
+ * y si tiene operador asignado la ventana es la de los dos.
+ */
+export function frontList(activity, resources = []) {
     const assigned = new Set((activity && activity.resources) || []);
-    if (!assigned.size) return null;
-    const crews = new Set();
-    let alone = 0;
+    if (!assigned.size) return [];
+
+    const crews = new Map();
     for (const resource of resources) {
         if (!assigned.has(resource.id) || resource.active === false) continue;
+        // Los que comparten cuadrilla son un frente; el que no la trae, uno suyo.
         const crew = String(resource.group || '').trim().toLowerCase();
-        if (crew) crews.add(crew); else alone++;
+        const key = crew || `solo:${resource.id}`;
+        if (!crews.has(key)) crews.set(key, { name: crew || resource.name, members: [] });
+        crews.get(key).members.push(resource);
     }
-    const total = crews.size + alone;
-    return total > 0 ? total : null;
+
+    return [...crews.values()].map((crew) => {
+        // El frente existe mientras esten todos: la ventana es la interseccion.
+        let from = '';
+        let to = '';
+        for (const member of crew.members) {
+            const span = crewWindow(member, resources);
+            if (span.from > from) from = span.from;
+            if (span.to && (!to || span.to < to)) to = span.to;
+        }
+        return { name: crew.name, members: crew.members, from, to };
+    });
 }
 
 /**
@@ -574,22 +598,32 @@ export function computeSchedule(activities, tasks, options = {}) {
         const entry = plan.get(chosen);
         const activity = activityById.get(task.activityId);
         if (!crewsByActivity.has(activity.id)) {
-            crewsByActivity.set(activity.id, new Array(crewsOf(activity, resources)).fill(null));
+            // Cada frente arranca cuando llega su gente y su maquina: una
+            // excavadora que entra en noviembre no abre frente en octubre.
+            const own = frontList(activity, resources);
+            crewsByActivity.set(activity.id, own.length
+                ? own.map((front) => ({ free: front.from || null, front }))
+                : new Array(crewsOf(activity, resources)).fill(null).map(() => ({ free: null, front: null })));
         }
         // El frente que se desocupa antes toma el tramo.
         const crews = crewsByActivity.get(activity.id);
         let pick = 0;
         for (let i = 1; i < crews.length; i++) {
-            if ((crews[i] || '') < (crews[pick] || '')) pick = i;
+            if ((crews[i].free || '') < (crews[pick].free || '')) pick = i;
         }
-        const free = crews[pick];
-        const begin = free && free > chosenDate ? free : chosenDate;
+        const slot = crews[pick];
+        const begin = slot.free && slot.free > chosenDate ? slot.free : chosenDate;
 
         entry.start = nextWorkday(begin, cal);
         entry.end = addWorkdays(entry.start, entry.duration - 1, cal);
         entry.crew = pick + 1;
         entry.crews = crews.length;
-        crews[pick] = addWorkdays(entry.end, 1, cal);
+        if (slot.front) {
+            entry.crewName = slot.front.name;
+            // Se avisa, no se mueve: correrlo solo lo escondería.
+            if (slot.front.to && entry.end > slot.front.to) entry.afterCrewLeaves = slot.front.to;
+        }
+        slot.free = addWorkdays(entry.end, 1, cal);
         remaining.delete(chosen);
     }
 
@@ -687,10 +721,35 @@ export function computeSchedule(activities, tasks, options = {}) {
         orphans,
         duplicates: duplicateRoutes(activities, tasks, ctx),
         clashes: resourceClashes(activities, nodes, resources, plan, byActivity),
+        // Tramos que terminan despues de que su frente se va de la obra.
+        late: [...plan.entries()]
+            .filter(([, entry]) => entry.afterCrewLeaves)
+            .map(([id, entry]) => ({ id, crew: entry.crewName, leaves: entry.afterCrewLeaves, end: entry.end })),
+        unmanned: unmannedMachines(activities, resources),
         context: ctx,
         from: projectStart,
         to: projectEnd
     };
+}
+
+/**
+ * Maquinaria asignada a una actividad que no tiene operador. Cuenta igual como
+ * frente —no se le va a quitar el plan a nadie por un dato que falta— pero hay
+ * que decirlo: una excavadora sin operador no excava.
+ */
+export function unmannedMachines(activities, resources = []) {
+    const byId = new Map(resources.map((r) => [r.id, r]));
+    const people = new Set(resources.filter((r) => r.type === 'persona').map((r) => r.id));
+    const found = [];
+    for (const activity of activities) {
+        for (const id of activity.resources || []) {
+            const resource = byId.get(id);
+            if (!resource || resource.type !== 'maquina' || resource.active === false) continue;
+            if (resource.operator && people.has(resource.operator)) continue;
+            found.push({ activity, resource });
+        }
+    }
+    return found;
 }
 
 /**

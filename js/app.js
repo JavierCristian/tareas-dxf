@@ -24,7 +24,8 @@ import {
 import {
     RESOURCE_TYPES, ROLE_HINTS, CODE_HINTS, typeOf, createResource, normalizeResource,
     workload, resourcesToCsv, resourcesCsvTemplate, resourcesFromCsv,
-    RESOURCE_RATE_UNITS, rateUnitLabel, dailyRateOf, hoursPerDayOf, spendOf
+    RESOURCE_RATE_UNITS, rateUnitLabel, dailyRateOf, hoursPerDayOf, spendOf,
+    SHIFTS, shiftLabel
 } from './resources.js';
 import {
     createPlace, normalizePlace, placeIcon, placeColor, placeTitle, placesOf, placesAt, placesToCsv
@@ -55,7 +56,7 @@ import {
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '19';
+export const APP_VERSION = '20';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -2674,6 +2675,17 @@ function renderProgram(schedule) {
     if ((schedule.clashes || []).length > 6) {
         avisos.push(`Y ${schedule.clashes.length - 6} choque(s) mas de agenda.`);
     }
+    for (const row of (schedule.unmanned || []).slice(0, 4)) {
+        avisos.push(`${row.resource.name} no tiene operador y esta en "${row.activity.name}".`);
+    }
+    for (const row of (schedule.late || []).slice(0, 4)) {
+        const task = taskById(row.id);
+        avisos.push(`"${task ? task.title : row.id}" termina el ${shortDate(row.end)}, `
+            + `despues de que ${row.crew} se va de la obra el ${shortDate(row.leaves)}.`);
+    }
+    if ((schedule.late || []).length > 4) {
+        avisos.push(`Y ${schedule.late.length - 4} tramo(s) mas quedan fuera de la estadia de su frente.`);
+    }
     warning.hidden = !avisos.length;
     warning.textContent = avisos.join(' ');
     renderDuplicates(schedule);
@@ -4295,6 +4307,17 @@ function renderResources() {
         if (daily) meta.append(tag(`${formatNumber(daily.perHour)} ${rateUnitLabel(daily.unit)}/h`));
         if (resource.fuel > 0) meta.append(tag(`${formatNumber(resource.fuel)} L/h`));
         if (resource.cost > 0) meta.append(tag(`${formatMoney(resource.cost)}/h`));
+        if (resource.shift) meta.append(tag(`Turno ${shiftLabel(resource.shift).toLowerCase()}`));
+        // La estadia solo se muestra cuando no es toda la obra.
+        if (resource.from || resource.to) {
+            meta.append(tag(resource.from && resource.to
+                ? `${shortDate(resource.from)} → ${shortDate(resource.to)}`
+                : (resource.from ? `Desde ${shortDate(resource.from)}` : `Hasta ${shortDate(resource.to)}`)));
+        }
+        if (resource.type === 'maquina') {
+            const operator = state.resources.find((r) => r.id === resource.operator);
+            meta.append(operator ? tag(`Opera ${operator.name}`) : tag('Sin operador', true));
+        }
         // Mantencion a la vista cuando el horometro se acerca a la proxima.
         if (resource.hourmeter > 0 && resource.nextService > 0) {
             const left = resource.nextService - resource.hourmeter;
@@ -4367,6 +4390,8 @@ function updateResourceHints() {
     $('#resource-rate-row').hidden = !machine;
     $('#resource-fuel-row').hidden = !machine;
     $('#resource-service-row').hidden = !machine;
+    // Y el operador solo lo lleva una maquina.
+    $('#resource-operator-label').hidden = !machine;
     renderResourceRateHint();
 }
 
@@ -4413,6 +4438,24 @@ function openResourceModal(resource, isNew = false) {
     $('#resource-brand').value = resource.brand || '';
     $('#resource-hourmeter').value = resource.hourmeter > 0 ? String(resource.hourmeter) : '';
     $('#resource-service').value = resource.nextService > 0 ? String(resource.nextService) : '';
+    $('#resource-from').value = resource.from || '';
+    $('#resource-to').value = resource.to || '';
+
+    const shift = $('#resource-shift');
+    shift.innerHTML = '';
+    for (const option of SHIFTS) shift.append(new Option(option.label, option.id));
+    shift.value = resource.shift || '';
+
+    // El operador se elige entre el personal de la obra; solo tiene sentido en
+    // la maquinaria, asi que la fila aparece y desaparece con el tipo.
+    const operator = $('#resource-operator');
+    operator.innerHTML = '';
+    operator.append(new Option('Sin operador', ''));
+    for (const person of state.resources.filter((r) => r.type === 'persona' && r.id !== resource.id)) {
+        operator.append(new Option(person.name + (person.shift ? ` · ${shiftLabel(person.shift)}` : ''), person.id));
+    }
+    operator.value = resource.operator || '';
+
     $('#btn-delete-resource').hidden = isNew;
     updateResourceHints();
     $('#resource-modal').classList.remove('hidden');
@@ -4488,6 +4531,10 @@ function wireResources() {
         draft.brand = $('#resource-brand').value.trim();
         draft.hourmeter = number('#resource-hourmeter');
         draft.nextService = number('#resource-service');
+        draft.from = $('#resource-from').value || '';
+        draft.to = $('#resource-to').value || '';
+        draft.shift = $('#resource-shift').value || '';
+        draft.operator = draft.type === 'maquina' ? ($('#resource-operator').value || '') : '';
         if (!draft.name) return;
 
         const isNew = draft.isNew;

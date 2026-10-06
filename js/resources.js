@@ -100,6 +100,10 @@ export function createResource(projectId, patch = {}) {
         brand: '',                     // marca
         hourmeter: null,               // horometro o kilometraje actual
         nextService: null,             // proxima mantencion, en horas
+        from: '',      // desde cuando esta en obra (YYYY-MM-DD); vacio, desde el inicio
+        to: '',        // hasta cuando; vacio, hasta el final
+        operator: '',  // id del operador que la maneja, en la maquinaria
+        shift: '',     // turno: dia, noche o mixto
         createdAt: now,
         updatedAt: now,
         ...patch
@@ -164,9 +168,56 @@ function csvNumber(value) {
    importar, de modo que el archivo exportado se puede editar y volver a subir. */
 export const RESOURCE_COLUMNS = [
     'tipo', 'nombre', 'cargo', 'identificador', 'marca', 'cuadrilla', 'telefono',
-    'rendimiento_hora', 'unidad_rendimiento', 'horas_jornada', 'combustible_l_hora',
-    'costo_hora', 'horometro', 'proxima_mantencion_h', 'estado', 'notas'
+    'rendimiento_hora', 'unidad_rendimiento', 'horas_jornada', 'turno',
+    'desde', 'hasta', 'operador',
+    'combustible_l_hora', 'costo_hora', 'horometro', 'proxima_mantencion_h',
+    'estado', 'notas'
 ];
+
+/** Turnos que se reconocen al leer la planilla. */
+export const SHIFTS = [
+    { id: '', label: 'Sin turno' },
+    { id: 'dia', label: 'Dia' },
+    { id: 'noche', label: 'Noche' },
+    { id: 'mixto', label: 'Mixto' }
+];
+
+export function shiftLabel(id) {
+    return (SHIFTS.find((s) => s.id === (id || '')) || SHIFTS[0]).label;
+}
+
+/**
+ * Ventana en que un recurso esta en obra. Vacia por un lado significa "desde
+ * siempre" o "hasta el final", que es lo normal en la mayoria.
+ */
+export function windowOf(resource) {
+    return { from: (resource && resource.from) || '', to: (resource && resource.to) || '' };
+}
+
+/**
+ * Ventana efectiva de una maquina: no basta con que este en obra, tambien tiene
+ * que estar su operador. Se cruzan las dos.
+ */
+export function crewWindow(resource, resources = []) {
+    const own = windowOf(resource);
+    const operator = resource && resource.operator
+        ? resources.find((r) => r.id === resource.operator)
+        : null;
+    if (!operator) return own;
+    const his = windowOf(operator);
+    return {
+        from: own.from > his.from ? own.from : his.from,
+        // Sin fecha de termino manda la del otro; con las dos, la mas temprana.
+        to: !own.to ? his.to : (!his.to ? own.to : (own.to < his.to ? own.to : his.to))
+    };
+}
+
+/** El operador sale por nombre, que es lo que se puede escribir en la planilla. */
+function operatorName(resource, resources) {
+    if (!resource || !resource.operator) return '';
+    const found = resources.find((r) => r.id === resource.operator);
+    return found ? found.name : '';
+}
 
 export function resourcesToCsv(resources, tasks) {
     const load = workload(resources, tasks);
@@ -186,6 +237,10 @@ export function resourcesToCsv(resources, tasks) {
             csvNumber(rate.value),
             rate.unit || '',
             csvNumber(resource.hoursPerDay),
+            shiftLabel(resource.shift),
+            resource.from || '',
+            resource.to || '',
+            operatorName(resource, resources),
             csvNumber(resource.fuel),
             csvNumber(resource.cost),
             csvNumber(resource.hourmeter),
@@ -201,10 +256,20 @@ export function resourcesToCsv(resources, tasks) {
 
 /** Planilla vacia con una fila de ejemplo, para que el formato quede claro. */
 export function resourcesCsvTemplate() {
+    // tipo;nombre;cargo;identificador;marca;cuadrilla;telefono;rendimiento_hora;
+    // unidad_rendimiento;horas_jornada;turno;desde;hasta;operador;
+    // combustible_l_hora;costo_hora;horometro;proxima_mantencion_h;estado;notas
     const ejemplos = [
-        ['Maquinaria', 'Retroexcavadora CAT 320', 'Excavacion de zanja', 'PP-1234', 'Caterpillar', 'Movimiento de tierra', '', '60', 'm3', '9', '18', '45000', '4820', '5000', 'Activo', 'Turno dia'],
-        ['Maquinaria', 'Cargador frontal 950', 'Carguio', 'RR-5678', 'Caterpillar', 'Movimiento de tierra', '', '80', 'm3', '9', '22', '52000', '3100', '3500', 'Activo', ''],
-        ['Personal', 'Juan Perez', 'Maestro electrico', '12.345.678-9', '', 'Cuadrilla 1', '+56 9 1234 5678', '', '', '9', '', '9500', '', '', 'Activo', '']
+        ['Maquinaria', 'Retroexcavadora CAT 320', 'Excavacion de zanja', 'PP-1234', 'Caterpillar', '', '',
+            '60', 'm3', '9', 'Dia', '2026-10-12', '', 'Juan Perez', '18', '45000', '4820', '5000', 'Activo', ''],
+        ['Maquinaria', 'Cargador frontal 950', 'Carguio', 'RR-5678', 'Caterpillar', '', '',
+            '80', 'm3', '9', 'Noche', '2026-11-03', '2027-02-28', 'Pedro Soto', '22', '52000', '3100', '3500', 'Activo', 'Llega en noviembre'],
+        ['Personal', 'Juan Perez', 'Operador', '12.345.678-9', '', '', '+56 9 1234 5678',
+            '', '', '9', 'Dia', '', '', '', '', '12000', '', '', 'Activo', ''],
+        ['Personal', 'Pedro Soto', 'Operador', '13.456.789-0', '', '', '',
+            '', '', '9', 'Noche', '2026-11-03', '', '', '', '12000', '', '', 'Activo', ''],
+        ['Personal', 'Luis Rojas', 'Maestro electrico', '14.567.890-1', '', 'Cuadrilla 1', '',
+            '', '', '9', 'Dia', '', '', '', '', '9500', '', '', 'Activo', '']
     ];
     const filas = ejemplos.map((fila) => fila.map(csvCell).join(';'));
     return '\ufeff' + [RESOURCE_COLUMNS.join(';'), ...filas].join('\r\n');
@@ -229,6 +294,10 @@ const COLUMN_ALIASES = {
     rateValue: ['rendimiento_hora', 'rendimiento', 'rendimiento_h', 'produccion_hora', 'rend_hora'],
     rateUnit: ['unidad_rendimiento', 'unidad', 'unidad_rend', 'medida'],
     hoursPerDay: ['horas_jornada', 'horas_dia', 'jornada', 'horas_por_dia'],
+    shift: ['turno', 'shift', 'jornada_turno', 'horario'],
+    from: ['desde', 'fecha_desde', 'inicio', 'entrada', 'disponible_desde', 'llegada'],
+    to: ['hasta', 'fecha_hasta', 'termino', 'salida', 'disponible_hasta', 'retiro'],
+    operator: ['operador', 'operario', 'conductor', 'chofer', 'maquinista', 'a_cargo'],
     fuel: ['combustible_l_hora', 'combustible', 'combustible_hora', 'litros_hora', 'consumo'],
     cost: ['costo_hora', 'costo', 'valor_hora', 'tarifa_hora', 'precio_hora'],
     hourmeter: ['horometro', 'horometro_actual', 'kilometraje', 'horas_acumuladas'],
@@ -242,6 +311,37 @@ function pick(row, field) {
         if (row[alias] !== undefined && row[alias] !== '') return row[alias];
     }
     return '';
+}
+
+/** Turno escrito como venga: Dia, DIURNO, noche, D, N... */
+function readShift(value) {
+    const text = normalizeHeader(value);
+    if (!text) return '';
+    if (text.startsWith('d')) return 'dia';
+    if (text.startsWith('n')) return 'noche';
+    if (text.startsWith('m') || text.startsWith('r')) return 'mixto';
+    return '';
+}
+
+/**
+ * Fecha escrita como se escribe en Chile. Se aceptan 2026-10-12, 12-10-2026 y
+ * 12/10/2026, y el año de dos cifras se entiende como 20xx.
+ */
+export function readDate(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    const iso = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(text);
+    if (iso) return `${iso[1]}-${pad(iso[2])}-${pad(iso[3])}`;
+    const local = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/.exec(text);
+    if (local) {
+        const year = local[3].length === 2 ? `20${local[3]}` : local[3];
+        return `${year}-${pad(local[2])}-${pad(local[1])}`;
+    }
+    return '';
+}
+
+function pad(value) {
+    return String(Number(value)).padStart(2, '0');
 }
 
 /** Tipo de recurso escrito de cualquier forma razonable. */
@@ -282,6 +382,7 @@ export function resourcesFromCsv(text, projectId, existing = []) {
 
     const created = [];
     const updated = [];
+    const pending = [];   // operadores escritos por nombre, a resolver al final
     let skipped = 0;
 
     for (const row of rows) {
@@ -306,6 +407,9 @@ export function resourcesFromCsv(text, projectId, existing = []) {
             group: String(pick(row, 'group') || '').slice(0, 80),
             phone: String(pick(row, 'phone') || '').slice(0, 40),
             hoursPerDay: toNumber(pick(row, 'hoursPerDay')),
+            shift: readShift(pick(row, 'shift')),
+            from: readDate(pick(row, 'from')),
+            to: readDate(pick(row, 'to')),
             fuel: toNumber(pick(row, 'fuel')) || 0,
             cost: toNumber(pick(row, 'cost')) || 0,
             hourmeter: toNumber(pick(row, 'hourmeter')),
@@ -321,16 +425,40 @@ export function resourcesFromCsv(text, projectId, existing = []) {
             updatedAt: Date.now()
         };
 
+        let saved;
         if (target) {
             Object.assign(target, patch);
             updated.push(target);
+            saved = target;
         } else {
-            const resource = createResource(projectId, patch);
-            created.push(resource);
-            byName.set(`${type}|${normalizeHeader(name)}`, resource);
-            if (resource.code) byCode.set(normalizeHeader(resource.code), resource);
+            saved = createResource(projectId, patch);
+            created.push(saved);
+            byName.set(`${type}|${normalizeHeader(name)}`, saved);
+            if (saved.code) byCode.set(normalizeHeader(saved.code), saved);
+        }
+
+        const operator = String(pick(row, 'operator') || '').trim();
+        if (operator) pending.push({ resource: saved, operator });
+    }
+
+    // El operador se resuelve al final porque puede venir mas abajo en la misma
+    // planilla: se busca por nombre y, si no, por RUT o numero interno.
+    const unknown = [];
+    if (pending.length) {
+        const people = new Map();
+        for (const resource of [...existing, ...created]) {
+            if (resource.type !== 'persona') continue;
+            people.set(normalizeHeader(resource.name), resource);
+            if (resource.code) people.set(normalizeHeader(resource.code), resource);
+        }
+        for (const { resource, operator } of pending) {
+            const found = people.get(normalizeHeader(operator));
+            if (found) {
+                resource.operator = found.id;
+                if (!updated.includes(resource) && !created.includes(resource)) updated.push(resource);
+            } else unknown.push(operator);
         }
     }
 
-    return { created, updated, skipped, columns };
+    return { created, updated, skipped, columns, unknown };
 }
