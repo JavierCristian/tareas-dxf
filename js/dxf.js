@@ -121,9 +121,12 @@ export function parseDxf(text) {
     while (i < length) {
         if (codes[i] === 0 && values[i] === 'SECTION') {
             i++;
+            // A SECTION le sigue siempre su nombre en el codigo 2, y nada mas.
+            // Consumir hasta el proximo codigo 0 se comia la cabecera entera,
+            // que son pares de codigo 9 y por eso nunca se leian las unidades.
             let name = '';
-            while (i < length && codes[i] !== 0) {
-                if (codes[i] === 2) name = values[i];
+            if (i < length && codes[i] === 2) {
+                name = values[i];
                 i++;
             }
             if (name === 'HEADER') i = readHeader(codes, values, length, i, header);
