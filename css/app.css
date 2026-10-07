@@ -1162,3 +1162,17 @@ textarea { resize: vertical; }
 .rate-people .muted { font-size: 11.5px; }
 /* Un frente que no se puede editar se nota: lo decide la maquinaria asignada. */
 .rate-grid input:disabled { opacity: .65; cursor: not-allowed; }
+
+.wizard-split {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 10px;
+    margin-bottom: 4px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: #0e141c;
+}
+.wizard-split input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); flex: none; margin-top: 1px; }
+.wizard-split strong { display: block; font-size: 13px; }
+.wizard-split small { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; }

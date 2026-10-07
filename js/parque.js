@@ -273,10 +273,31 @@ export function nameTrenches(classification, shapes, options = {}) {
     for (const [clave, grupo] of grupos) {
         grupo.sort((a, b) => a.along - b.along);
         grupo.forEach((row, i) => {
-            names.set(row.shape.id, grupo.length > 1 ? `${clave} ${i + 1}` : clave);
+            names.set(row.shape.id, {
+                name: grupo.length > 1 ? `${clave} ${i + 1}` : clave,
+                route: clave,
+                // Posicion dentro del recorrido, para poder listar los tramos en
+                // el orden en que se recorre la obra y no en el del archivo.
+                index: i,
+                along: row.along
+            });
         });
     }
     return names;
+}
+
+/**
+ * Orden en que conviene listar unas zanjas: por recorrido, y dentro de cada
+ * recorrido siguiendo su sentido. Es como se habla en terreno —"vamos por el
+ * WTG03-SSEE, tramo 4"— y no como vienen en el DXF, que no es ningun orden.
+ */
+export function sortTrenches(shapes, names) {
+    return [...shapes].sort((a, b) => {
+        const ia = names.get(a.id);
+        const ib = names.get(b.id);
+        if (!ia || !ib) return 0;
+        return ia.route.localeCompare(ib.route, 'es') || ia.index - ib.index;
+    });
 }
 
 /** Distancia a la que queda una zanja a lo largo del recorrido de su circuito. */
@@ -319,6 +340,19 @@ export const SUGGESTED_ACTIVITIES = [
     { key: 'ducto', name: 'Ductos y hormigonado', target: 'cruce', unit: 'ml', scope: 'zanja', after: ['exc_cruce'] },
     { key: 'repo', name: 'Relleno y reposicion', target: 'cruce', unit: 'ml', scope: 'zanja', after: ['ducto'] }
 ];
+
+/**
+ * Tipos de zanja sobre los que corre una actividad propuesta, uno por uno.
+ *
+ * Una excavacion en TA (0,60 × 1,10) y una en TC (1,30 × 1,10) no son la misma
+ * partida: mueven el doble de tierra por metro y se pagan aparte. Separarlas
+ * deja una actividad por tipo, cada una con su cubicacion y su rendimiento.
+ */
+export function typesFor(suggestion, classification) {
+    if (suggestion.target === 'circuito') return [];
+    const familia = suggestion.target === 'cruce' ? 'CRUCE' : 'ZANJA';
+    return classification.trenches.filter((t) => t.familia === familia);
+}
 
 /** Capas sobre las que se ejecuta una actividad propuesta. */
 export function layersFor(suggestion, classification) {

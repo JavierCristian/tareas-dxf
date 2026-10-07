@@ -51,12 +51,12 @@ import {
 import { dayReport } from './report.js';
 import {
     classifyLayers, summarize as summarizeScheme, verifyTriadas, nameTrenches,
-    SUGGESTED_ACTIVITIES, layersFor
+    SUGGESTED_ACTIVITIES, layersFor, typesFor, sortTrenches
 } from './parque.js';
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '21';
+export const APP_VERSION = '22';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -1975,7 +1975,9 @@ function openWizard() {
         classification,
         // Las secciones vienen del tipo de zanja, pero se pueden corregir.
         sections: Object.fromEntries(classification.trenches.map((t) => [t.layer, { width: t.width, depth: t.depth }])),
-        chosen: new Set(SUGGESTED_ACTIVITIES.map((a) => a.key))
+        chosen: new Set(SUGGESTED_ACTIVITIES.map((a) => a.key)),
+        // Una actividad por tipo de zanja: es como se cubica y como se paga.
+        byType: true
     };
     renderWizard();
     $('#wizard-modal').classList.remove('hidden');
@@ -1996,15 +1998,75 @@ function wizardScheme() {
     return { classification, summary: summarizeScheme(classification, state.shapes, state.unitScale) };
 }
 
-/** Cuantos tramos generaria una actividad propuesta. */
-function wizardTaskCount(suggestion, classification) {
-    const layers = new Set(layersFor(suggestion, classification));
-    if (!layers.size) return 0;
-    if (suggestion.target === 'circuito') {
-        // La capa es el tramo: un cable de potencia por tramo de circuito.
-        return [...layers].filter((name) => state.shapes.some((s) => s.layer === name && measure(s))).length;
+/** Clave de encadenamiento: la partida y, si se separo, su tipo de zanja. */
+function chainKey(key, trench) {
+    return trench ? `${key}|${trench.layer}` : key;
+}
+
+/**
+ * Las actividades ya creadas de una partida anterior que le tocan a esta.
+ *
+ * Si las dos estan separadas por tipo, se enlaza con la de su mismo tipo: la
+ * cama de arena en TA espera a la excavacion en TA. Si la de atras esta
+ * separada y esta no —el cable de potencia, que va por circuito y cruza los
+ * tres tipos— espera a todas, y despues el enlace por ubicacion decide tramo a
+ * tramo cual de ellas es la suya.
+ */
+function antecesoras(key, row, rows) {
+    const own = rows.filter((r) => r.suggestion.key === key && r.activity);
+    if (!own.length) return [];
+    if (row.trench) {
+        const same = own.find((r) => r.trench && r.trench.layer === row.trench.layer);
+        if (same) return [same.activity];
+        // La de atras no se separo: hay una sola y vale para todos.
+        if (own.length === 1 && !own[0].trench) return [own[0].activity];
+        return [];
     }
-    return state.shapes.filter((s) => layers.has(s.layer) && measure(s)).length;
+    return own.map((r) => r.activity);
+}
+
+/**
+ * Las actividades que se van a crear de verdad, una por fila, con las capas
+ * sobre las que corre cada una y los tramos que generaria.
+ *
+ * Separadas por tipo de zanja si se pidio: excavar en TA (0,60 × 1,10) y en TC
+ * (1,30 × 1,10) no es la misma partida, mueve distinta tierra por metro y se
+ * paga aparte. La pantalla y la creacion salen de aqui, asi que no pueden
+ * discrepar en lo que anuncian y lo que hacen.
+ */
+function wizardRows(classification, byType) {
+    const rows = [];
+    const withShapes = (layers) => state.shapes.filter((s) => layers.has(s.layer) && measure(s));
+
+    for (const suggestion of SUGGESTED_ACTIVITIES) {
+        if (suggestion.target === 'circuito') {
+            // La capa es el tramo: un cable de potencia por tramo de circuito.
+            const layers = layersFor(suggestion, classification)
+                .filter((name) => state.shapes.some((s) => s.layer === name && measure(s)));
+            if (layers.length) {
+                rows.push({ suggestion, trench: null, name: suggestion.name, layers, count: layers.length });
+            }
+            continue;
+        }
+
+        const types = typesFor(suggestion, classification);
+        if (byType) {
+            for (const trench of types) {
+                const count = withShapes(new Set([trench.layer])).length;
+                if (count) {
+                    rows.push({
+                        suggestion, trench, name: `${suggestion.name} ${trench.tipo}`,
+                        layers: [trench.layer], count
+                    });
+                }
+            }
+        } else {
+            const layers = types.map((t) => t.layer);
+            const count = withShapes(new Set(layers)).length;
+            if (count) rows.push({ suggestion, trench: null, name: suggestion.name, layers, count });
+        }
+    }
+    return rows;
 }
 
 function renderWizard() {
@@ -2069,12 +2131,22 @@ function renderWizard() {
     /* --- Actividades propuestas --- */
     const acts = $('#wizard-activities');
     acts.innerHTML = '';
+    const rows = wizardRows(classification, wizard.byType);
+    $('#wizard-by-type').checked = wizard.byType;
+
     let total = 0;
+    let actividades = 0;
+    // Se agrupan por propuesta: una casilla por partida, aunque salgan tres
+    // actividades de ella. Marcar "Excavacion" es marcar TA, TB y TC.
     for (const suggestion of SUGGESTED_ACTIVITIES) {
-        const count = wizardTaskCount(suggestion, classification);
+        const own = rows.filter((r) => r.suggestion.key === suggestion.key);
         // Lo que el plano no dibuja no se ofrece: sin cruces no hay hormigonado.
-        if (!count) { wizard.chosen.delete(suggestion.key); continue; }
-        if (wizard.chosen.has(suggestion.key)) total += count;
+        if (!own.length) { wizard.chosen.delete(suggestion.key); continue; }
+        const count = own.reduce((sum, r) => sum + r.count, 0);
+        if (wizard.chosen.has(suggestion.key)) {
+            total += count;
+            actividades += own.length;
+        }
 
         const row = document.createElement('label');
         row.className = 'wizard-act';
@@ -2088,9 +2160,13 @@ function renderWizard() {
             else wizard.chosen.delete(suggestion.key);
             renderWizard();
         });
-        row.querySelector('strong').textContent = suggestion.name;
-        row.querySelector('small').textContent = `se mide en ${rateUnitOf(suggestion.unit).label}`
-            + (suggestion.scope === 'circuito' ? ' · se repite por circuito' : ' · una vez por zanja');
+        row.querySelector('strong').textContent = own.length > 1
+            ? `${suggestion.name} — ${own.length} actividades`
+            : suggestion.name;
+        row.querySelector('small').textContent = own.length > 1
+            ? own.map((r) => `${r.trench.tipo} ${r.count}`).join(' · ') + ` · ${rateUnitOf(suggestion.unit).label}`
+            : `se mide en ${rateUnitOf(suggestion.unit).label}`
+              + (suggestion.scope === 'circuito' ? ' · se repite por circuito' : ' · una vez por zanja');
         row.querySelector('.count').textContent = `${count} tramos`;
         acts.append(row);
     }
@@ -2105,7 +2181,7 @@ function renderWizard() {
 
     const create = $('#btn-wizard-create');
     create.textContent = total
-        ? `Crear ${wizard.chosen.size} actividades y ${total} tramos`
+        ? `Crear ${actividades} actividades y ${total} tramos`
         : 'Crear la obra';
     create.disabled = !total;
 }
@@ -2176,36 +2252,44 @@ async function runWizard() {
         const used = state.activities.length;
         const activities = [];
         const byKey = new Map();
-        chosen.forEach((suggestion, index) => {
+        const rows = wizardRows(classification, wizard.byType)
+            .filter((row) => wizard.chosen.has(row.suggestion.key));
+
+        rows.forEach((row, index) => {
             const activity = createActivity(state.project.id, {
-                name: suggestion.name,
+                name: row.name,
                 order: used + index,
                 color: ACTIVITY_COLORS[(used + index) % ACTIVITY_COLORS.length],
-                rate: { unit: suggestion.unit, value: 0 },
-                scope: suggestion.scope,
+                rate: { unit: row.suggestion.unit, value: 0 },
+                scope: row.suggestion.scope,
                 crews: 1,
                 // Las que abren una cadena se anclan a mano: los cruces corren
                 // en paralelo a la zanja y reordenar no debe encadenarlos a ella.
-                linksAuto: !suggestion.anchor
+                linksAuto: !row.suggestion.anchor
             });
-            byKey.set(suggestion.key, activity);
+            // La clave lleva el tipo: asi la cama de arena en TA se encadena con
+            // la excavacion en TA, y no con la de todo el parque.
+            byKey.set(chainKey(row.suggestion.key, row.trench), activity);
+            row.activity = activity;
             activities.push(activity);
         });
 
-        // Encadenar las actividades saltando las que no se crearon: si no se
-        // controla la cama de arena, el cobre pasa a colgar de la excavacion.
-        for (const suggestion of chosen) {
+        // Encadenar saltando las que no se crearon: si no se controla la cama de
+        // arena, el cobre pasa a colgar de la excavacion.
+        for (const row of rows) {
             const links = [];
-            for (const key of suggestion.after) {
+            for (const key of row.suggestion.after) {
                 let current = key;
                 let guard = 0;
-                while (current && !byKey.has(current) && guard++ < SUGGESTED_ACTIVITIES.length) {
+                let found = antecesoras(current, row, rows);
+                while (!found.length && current && guard++ < SUGGESTED_ACTIVITIES.length) {
                     const previous = SUGGESTED_ACTIVITIES.find((s) => s.key === current);
                     current = previous && previous.after.length ? previous.after[0] : null;
+                    if (current) found = antecesoras(current, row, rows);
                 }
-                if (current && byKey.has(current)) links.push({ id: byKey.get(current).id, lag: 0 });
+                for (const activity of found) links.push({ id: activity.id, lag: 0 });
             }
-            byKey.get(suggestion.key).predecessors = links;
+            row.activity.predecessors = links;
         }
 
         await nextFrame();
@@ -2219,15 +2303,19 @@ async function runWizard() {
         }
 
         const tasks = [];
-        for (const suggestion of chosen) {
-            const activity = byKey.get(suggestion.key);
-            const layers = new Set(layersFor(suggestion, classification));
-            // Arrancan en el orden en que vienen del plano; desde ahi se
-            // reordenan arrastrando, para empezar por el sector que convenga.
+        for (const row of rows) {
+            const { suggestion, activity } = row;
             let order = 0;
 
             if (suggestion.target === 'circuito') {
-                for (const name of layers) {
+                // La capa es el tramo, y van por circuito y recorrido.
+                const ordenadas = [...row.layers].sort((a, b) => {
+                    const ia = tramoOf.get(a);
+                    const ib = tramoOf.get(b);
+                    return ia.circuito.codigo.localeCompare(ib.circuito.codigo, 'es')
+                        || ia.tramo.localeCompare(ib.tramo, 'es');
+                });
+                for (const name of ordenadas) {
                     const own = state.shapes.filter((s) => s.layer === name && measure(s));
                     if (!own.length) continue;
                     const info = tramoOf.get(name);
@@ -2243,18 +2331,24 @@ async function runWizard() {
                 continue;
             }
 
-            for (const shape of state.shapes) {
-                if (!layers.has(shape.layer) || !measure(shape)) continue;
+            // En el orden en que se recorre la obra, no en el del archivo: por
+            // recorrido, y dentro de cada uno siguiendo su sentido.
+            const layers = new Set(row.layers);
+            const own = state.shapes.filter((s) => layers.has(s.layer) && measure(s));
+            for (const shape of sortTrenches(own, trenchNames)) {
                 const ref = elementRef(shape, anchorOf(shape));
                 const section = sectionByLayer.get(shape.layer);
                 if (section) {
                     ref.width = section.width;
                     ref.depth = section.depth;
                 }
+                const named = trenchNames.get(shape.id);
                 tasks.push(createTask(state.project.id, {
                     activityId: activity.id,
                     order: order++,
-                    title: `${suggestion.name} ${trenchNames.get(shape.id) || shape.layer}`,
+                    // Lleva el tipo: en el parte diario o en el CSV el tramo se
+                    // lee suelto, y "Excavacion WTG05-SSEE 2" no dice si es TA.
+                    title: `${row.name} ${named ? named.name : shape.layer}`,
                     elements: [ref]
                 }));
             }
@@ -2292,6 +2386,11 @@ async function runWizard() {
 
 function wireWizard() {
     $('#btn-wizard').addEventListener('click', openWizard);
+    $('#wizard-by-type').addEventListener('change', (e) => {
+        if (!state.wizard) return;
+        state.wizard.byType = e.target.checked;
+        renderWizard();
+    });
     $('#wizard-form').addEventListener('submit', (e) => {
         e.preventDefault();
         runWizard();

@@ -78,8 +78,21 @@ referencia y el asistente las lista aparte.
 
 ### Que crea
 
-Nueve actividades encadenadas, cada una con su unidad de rendimiento y su
-alcance, y los tramos que le corresponden:
+Las partidas de una red de media tension subterranea, cada una con su unidad de
+rendimiento y su alcance, y los tramos que le corresponden.
+
+**Las de zanja se crean una por tipo.** Excavar en TA (0,60 × 1,10) y en TC
+(1,30 × 1,10) no es la misma partida: mueven distinta tierra por metro, llevan
+distinto rendimiento y se pagan aparte. Asi salen *Excavacion TA*, *Excavacion
+TB* y *Excavacion TC*, cada una con una sola seccion y su propia cubicacion. En
+el asistente hay una casilla para no separarlas, si se prefiere una sola.
+
+La cadena se arma dentro de cada tipo —la cama de arena en TA espera a la
+excavacion en TA— y las que van por circuito, que cruzan los tres tipos,
+esperan a todas; despues el enlace por ubicacion decide tramo a tramo cual les
+toca. Sobre un parque de 20 aerogeneradores salen 20 actividades y 254 tramos.
+
+Las partidas propuestas:
 
 | Actividad | Sobre | Se mide en | Va despues de |
 | --- | --- | --- | --- |
@@ -106,9 +119,10 @@ por tramo de circuito**: usa sus capas `FO-` si estan dibujadas y, si no, sigue
 el mismo recorrido del circuito de MT.
 
 Cada tramo de zanja se llama como el recorrido que lo cruza, numerado en el
-orden en que se encuentra saliendo de la maquina: `Excavacion WTG09-SSEE 3` es
-el tercer trecho desde el aerogenerador hacia la subestacion, que es como se
-habla en terreno. Los tramos de zanja llevan ademas su ancho y profundidad, de
+orden en que se encuentra saliendo de la maquina: `Excavacion TB WTG09-SSEE 3`
+es el tercer trecho desde el aerogenerador hacia la subestacion, que es como se
+habla en terreno. **Y se listan en ese mismo orden**, recorrido por recorrido,
+no en el del archivo DXF, que no es ningun orden. Los tramos de zanja llevan ademas su ancho y profundidad, de
 modo que el programa ya sabe cuantos m³ son.
 
 ### La verificacion de triadas
