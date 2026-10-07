@@ -287,6 +287,86 @@ export function nameTrenches(classification, shapes, options = {}) {
 }
 
 /**
+ * Corridas de zanja: los trechos que se pueden tender de una pasada.
+ *
+ * Una corrida es un tramo de zanja continuo del mismo recorrido. Lo que la
+ * corta son los cruces de camino, porque la zanja se dibuja interrumpida ahi y
+ * el cruce rellena el hueco; el cambio de tipo de zanja NO la corta, porque el
+ * cobre no se detiene donde la zanja pasa de 0,60 a 0,80.
+ *
+ * Es la unidad real de tendido: se tiende el cobre y se pone la cama hasta el
+ * cruce, y cuando el cruce se libera se pasan los cables. Dentro de la corrida
+ * se puede cortar igual y empalmar con soldadura exotermica, pero eso lo decide
+ * quien dirige la obra, no el plano.
+ *
+ * La red converge en la subestacion, asi que la contiguidad se mira solo entre
+ * piezas del mismo recorrido: si no, todo el parque queda en una sola mancha.
+ */
+export function trenchRuns(classification, shapes, names, options = {}) {
+    const { metersPerUnit = 1, gap = 3 } = options;
+    const tol = gap / metersPerUnit;
+    const layers = new Set(classification.trenches
+        .filter((t) => t.familia === 'ZANJA')
+        .map((t) => t.layer));
+    const own = shapes.filter((s) => layers.has(s.layer) && s.pts && s.pts.length >= 4);
+
+    const routeOf = (shape) => (names.get(shape.id) || {}).route || shape.layer;
+    const ends = (shape) => [
+        [shape.pts[0], shape.pts[1]],
+        [shape.pts[shape.pts.length - 2], shape.pts[shape.pts.length - 1]]
+    ];
+    const touch = (a, b) => {
+        for (const p of ends(a)) {
+            for (const q of ends(b)) if (Math.hypot(p[0] - q[0], p[1] - q[1]) <= tol) return true;
+        }
+        return false;
+    };
+
+    // Conjuntos disjuntos sobre las piezas de cada recorrido.
+    const parent = new Map(own.map((s) => [s.id, s.id]));
+    const find = (id) => { while (parent.get(id) !== id) id = parent.get(id); return id; };
+    for (let i = 0; i < own.length; i++) {
+        for (let j = i + 1; j < own.length; j++) {
+            if (routeOf(own[i]) !== routeOf(own[j])) continue;
+            if (touch(own[i], own[j])) parent.set(find(own[i].id), find(own[j].id));
+        }
+    }
+
+    const groups = new Map();
+    for (const shape of own) {
+        const key = find(shape.id);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(shape);
+    }
+
+    const runs = [...groups.values()].map((pieces) => {
+        const sorted = sortTrenches(pieces, names);
+        const route = routeOf(sorted[0]);
+        return {
+            route,
+            pieces: sorted,
+            // Posicion de la corrida dentro de su recorrido, para numerarla.
+            along: Math.min(...sorted.map((s) => (names.get(s.id) || {}).index ?? 0)),
+            types: [...new Set(sorted.map((s) => s.layer))].sort()
+        };
+    });
+
+    // Numerar las corridas de cada recorrido en su sentido.
+    const byRoute = new Map();
+    for (const run of runs) {
+        if (!byRoute.has(run.route)) byRoute.set(run.route, []);
+        byRoute.get(run.route).push(run);
+    }
+    for (const [route, own2] of byRoute) {
+        own2.sort((a, b) => a.along - b.along);
+        own2.forEach((run, i) => {
+            run.name = own2.length > 1 ? `${route} ${i + 1}` : route;
+        });
+    }
+    return runs.sort((a, b) => a.route.localeCompare(b.route, 'es') || a.along - b.along);
+}
+
+/**
  * Orden en que conviene listar unas zanjas: por recorrido, y dentro de cada
  * recorrido siguiendo su sentido. Es como se habla en terreno —"vamos por el
  * WTG03-SSEE, tramo 4"— y no como vienen en el DXF, que no es ningun orden.
@@ -324,21 +404,32 @@ function alongRoute(shape, cables) {
  * sobre que capas se ejecuta y como se mide; el usuario las ajusta antes de
  * crearlas.
  */
+/*
+ * "group" dice cual es la unidad de trabajo de cada partida:
+ *
+ *   pieza   — cada polilinea de zanja, que es de un solo tipo. Es lo que se
+ *             cubica y se paga: los m3 de TA no son los de TC.
+ *   corrida — el trecho continuo entre cruces, aunque cambie de tipo. Es lo que
+ *             se tiende de una pasada: el cobre no se detiene donde la zanja
+ *             pasa de 0,60 a 0,80, se detiene en el cruce.
+ */
 export const SUGGESTED_ACTIVITIES = [
-    { key: 'exc', name: 'Excavacion', target: 'zanja', unit: 'm3', scope: 'zanja', after: [] },
+    { key: 'exc', name: 'Excavacion', target: 'zanja', group: 'pieza', unit: 'm3', scope: 'zanja', after: [] },
     // La malla de puesta a tierra va al fondo de la zanja, antes de la cama.
-    { key: 'pt', name: 'Tendido de cobre', target: 'zanja', unit: 'ml', scope: 'zanja', after: ['exc'] },
-    { key: 'cama', name: 'Cama de arena', target: 'zanja', unit: 'ml', scope: 'zanja', after: ['pt'] },
-    { key: 'pot', name: 'Cable de potencia', target: 'circuito', familias: ['MT'], unit: 'ml_fase', scope: 'circuito', after: ['cama'] },
+    { key: 'pt', name: 'Tendido de cobre', target: 'zanja', group: 'corrida', unit: 'ml', scope: 'zanja', after: ['exc'] },
+    { key: 'cama', name: 'Cama de arena', target: 'zanja', group: 'corrida', unit: 'ml', scope: 'zanja', after: ['pt'] },
+    // Ademas de la cama, el cable espera los ductos del cruce que atraviesa:
+    // hasta que el cruce no esta entubado no se pasan los cables al otro lado.
+    { key: 'pot', name: 'Cable de potencia', target: 'circuito', familias: ['MT'], unit: 'ml_fase', scope: 'circuito', after: ['cama', 'ducto'] },
     // La fibra va una por tramo de circuito. Si se dibujo aparte va por sus
     // capas FO; si no, sigue el mismo recorrido que el circuito de MT.
     { key: 'fo', name: 'Fibra optica', target: 'circuito', familias: ['FO', 'MT'], unit: 'ml', scope: 'circuito', after: ['pot'] },
-    { key: 'tapa', name: 'Tapado y compactacion', target: 'zanja', unit: 'm3', scope: 'zanja', after: ['fo'] },
+    { key: 'tapa', name: 'Tapado y compactacion', target: 'zanja', group: 'pieza', unit: 'm3', scope: 'zanja', after: ['fo'] },
     // Los cruces son una cadena aparte: se hacen en paralelo a la zanja, asi
     // que el primero se ancla a mano para que reordenar no lo encadene a ella.
-    { key: 'exc_cruce', name: 'Excavacion de cruce', target: 'cruce', unit: 'm3', scope: 'zanja', after: [], anchor: true },
-    { key: 'ducto', name: 'Ductos y hormigonado', target: 'cruce', unit: 'ml', scope: 'zanja', after: ['exc_cruce'] },
-    { key: 'repo', name: 'Relleno y reposicion', target: 'cruce', unit: 'ml', scope: 'zanja', after: ['ducto'] }
+    { key: 'exc_cruce', name: 'Excavacion de cruce', target: 'cruce', group: 'pieza', unit: 'm3', scope: 'zanja', after: [], anchor: true },
+    { key: 'ducto', name: 'Ductos y hormigonado', target: 'cruce', group: 'pieza', unit: 'ml', scope: 'zanja', after: ['exc_cruce'] },
+    { key: 'repo', name: 'Relleno y reposicion', target: 'cruce', group: 'pieza', unit: 'ml', scope: 'zanja', after: ['ducto'] }
 ];
 
 /**

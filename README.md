@@ -81,7 +81,39 @@ referencia y el asistente las lista aparte.
 Las partidas de una red de media tension subterranea, cada una con su unidad de
 rendimiento y su alcance, y los tramos que le corresponden.
 
-**Las de zanja se crean una por tipo.** Excavar en TA (0,60 × 1,10) y en TC
+### La unidad de trabajo: la corrida
+
+Una partida de zanja no se mide donde se ejecuta. Son dos cosas distintas:
+
+- **La pieza**: cada polilinea de zanja, de un solo tipo. Es lo que se cubica y
+  se paga, porque los m³ de TA no son los de TC.
+- **La corrida**: el trecho continuo del mismo recorrido entre dos cruces,
+  aunque por dentro cambie de tipo. Es lo que se tiende de una pasada.
+
+Lo que corta una corrida es el **cruce de camino**, no el cambio de tipo: el
+cobre no se detiene donde la zanja pasa de 0,60 a 0,80, se detiene donde hay que
+esperar que el cruce quede entubado. El plano ya lo dice solo, porque la zanja
+se dibuja interrumpida en cada cruce y el cruce rellena el hueco.
+
+Por eso la excavacion y el tapado van **por pieza**, separados por tipo, y el
+tendido de cobre y la cama de arena van **por corrida**, sin separar. Sobre un
+parque de 20 aerogeneradores, 46 piezas de zanja dan 31 corridas: el recorrido
+`WTG09-SSEE` es una sola corrida de 3.316 m que junta sus 6 piezas de TA, TB y
+TC, y el `WTG03-SSEE`, que lleva tres cruces, queda partido en cuatro.
+
+De ahi sale sola la regla de terreno: **el cobre de una corrida espera a toda la
+excavacion que lleva debajo**, los seis pedazos, sin importar de que tipo sean.
+Si se empieza a excavar en el WTG18 hay que llegar al otro extremo de la corrida
+para empezar a tender. Y el **cable de potencia espera ademas los ductos de los
+cruces que atraviesa**, porque hasta que el cruce no esta entubado no se pasan
+los cables al otro lado: en este parque, 11 de los 20 tramos de cable esperan a
+algun cruce.
+
+Dentro de una corrida se puede cortar igual y empalmar con soldadura
+exotermica. Eso lo decide quien dirige la obra, no el plano, y se hace dividiendo
+el elemento en la pestana *Elemento*.
+
+**Las de pieza se crean una por tipo.** Excavar en TA (0,60 × 1,10) y en TC
 (1,30 × 1,10) no es la misma partida: mueven distinta tierra por metro, llevan
 distinto rendimiento y se pagan aparte. Asi salen *Excavacion TA*, *Excavacion
 TB* y *Excavacion TC*, cada una con una sola seccion y su propia cubicacion. En

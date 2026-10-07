@@ -51,12 +51,12 @@ import {
 import { dayReport } from './report.js';
 import {
     classifyLayers, summarize as summarizeScheme, verifyTriadas, nameTrenches,
-    SUGGESTED_ACTIVITIES, layersFor, typesFor, sortTrenches
+    SUGGESTED_ACTIVITIES, layersFor, typesFor, sortTrenches, trenchRuns
 } from './parque.js';
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '22';
+export const APP_VERSION = '23';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -1976,6 +1976,7 @@ function openWizard() {
         // Las secciones vienen del tipo de zanja, pero se pueden corregir.
         sections: Object.fromEntries(classification.trenches.map((t) => [t.layer, { width: t.width, depth: t.depth }])),
         chosen: new Set(SUGGESTED_ACTIVITIES.map((a) => a.key)),
+        runs: null,   // corridas de zanja, al primer uso (medirlas es caro)
         // Una actividad por tipo de zanja: es como se cubica y como se paga.
         byType: true
     };
@@ -1996,6 +1997,22 @@ function wizardScheme() {
         trenches: wizard.classification.trenches.map((t) => ({ ...t, ...wizard.sections[t.layer] }))
     };
     return { classification, summary: summarizeScheme(classification, state.shapes, state.unitScale) };
+}
+
+/**
+ * Las corridas de zanja del plano, calculadas una sola vez. Nombrar las zanjas
+ * es caro —hay que medir cada traza contra cada circuito— y la pantalla del
+ * asistente se redibuja en cada casilla que se toca.
+ */
+function wizardRuns(classification) {
+    const wizard = state.wizard;
+    if (!wizard.runs) {
+        wizard.names = nameTrenches(classification, state.shapes, { metersPerUnit: state.unitScale });
+        wizard.runs = trenchRuns(classification, state.shapes, wizard.names, {
+            metersPerUnit: state.unitScale
+        });
+    }
+    return wizard.runs;
 }
 
 /** Clave de encadenamiento: la partida y, si se separo, su tipo de zanja. */
@@ -2046,6 +2063,15 @@ function wizardRows(classification, byType) {
             if (layers.length) {
                 rows.push({ suggestion, trench: null, name: suggestion.name, layers, count: layers.length });
             }
+            continue;
+        }
+
+        // Las partidas que van por corrida no se separan por tipo: el cobre no
+        // se detiene donde la zanja pasa de 0,60 a 0,80, se detiene en el cruce.
+        if (suggestion.group === 'corrida') {
+            const layers = typesFor(suggestion, classification).map((t) => t.layer);
+            const count = wizardRuns(classification).length;
+            if (count) rows.push({ suggestion, trench: null, name: suggestion.name, layers, count });
             continue;
         }
 
@@ -2166,7 +2192,8 @@ function renderWizard() {
         row.querySelector('small').textContent = own.length > 1
             ? own.map((r) => `${r.trench.tipo} ${r.count}`).join(' · ') + ` · ${rateUnitOf(suggestion.unit).label}`
             : `se mide en ${rateUnitOf(suggestion.unit).label}`
-              + (suggestion.scope === 'circuito' ? ' · se repite por circuito' : ' · una vez por zanja');
+              + (suggestion.group === 'corrida' ? ' · por corrida, de cruce a cruce' : '')
+              + (suggestion.scope === 'circuito' ? ' · se repite por circuito' : '');
         row.querySelector('.count').textContent = `${count} tramos`;
         acts.append(row);
     }
@@ -2326,6 +2353,20 @@ async function runWizard() {
                         // Un circuito es una terna de fases R, S, T.
                         ternas: 1,
                         elements: own.map((shape) => elementRef(shape, anchorOf(shape)))
+                    }));
+                }
+                continue;
+            }
+
+            // Un tramo por corrida: el trecho continuo que se tiende de una
+            // pasada, aunque por dentro cambie de tipo de zanja.
+            if (suggestion.group === 'corrida') {
+                for (const run of wizardRuns(classification)) {
+                    tasks.push(createTask(state.project.id, {
+                        activityId: activity.id,
+                        order: order++,
+                        title: `${suggestion.name} ${run.name}`,
+                        elements: run.pieces.map((shape) => elementRef(shape, anchorOf(shape)))
                     }));
                 }
                 continue;
