@@ -122,3 +122,16 @@
     .report-sheet tr { break-inside: avoid; }
     .report-figure { break-inside: avoid; }
 }
+
+/* El membrete del parte: los logos de las partes y el contrato. */
+.report-logo {
+    max-height: 48px;
+    max-width: 140px;
+    object-fit: contain;
+    flex: none;
+}
+.report-parties {
+    font-size: 11px;
+    color: #475569;
+    margin-top: 3px;
+}

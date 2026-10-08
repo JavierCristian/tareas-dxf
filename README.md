@@ -45,6 +45,40 @@ sin servidor ni base de datos remota.
     recursos y ubicaciones a CSV, o una copia completa en `.json` que incluye el
     plano.
 
+## Empezar una obra
+
+Una obra no nace de un archivo. Antes del plano se pregunta lo que despues
+aparece en todo lo que se firma: **nombre, codigo o contrato, ubicacion,
+mandante, contratista, administrador de obra, fecha de inicio, calendario y
+moneda**, mas los **logos** del mandante y del contratista para el membrete del
+parte diario. Solo el nombre es obligatorio; el resto se puede completar
+despues.
+
+La fecha de inicio y el calendario entran directo al programa maestro, asi que
+al llegar al plano ya esta todo puesto.
+
+### Donde se guarda cada cosa
+
+Son dos cosas distintas y conviene no confundirlas:
+
+- **La obra** —el plano, las actividades, los tramos, el avance con la fecha de
+  cada parte, los recursos y las instalaciones— vive siempre **en el
+  dispositivo**, en IndexedDB, y funciona sin conexion. Eso no se elige.
+- **La carpeta de obra** es donde caen los archivos que uno quiere tener fuera.
+  Esa si se elige, y dentro se crean solas: `Partes diarios` (con una subcarpeta
+  por mes), `Fotografias`, `Planos`, `Planillas` y `Respaldos`.
+
+Desde ahi, el parte diario, los CSV de tareas, tramos, recursos y ubicaciones y
+la copia `.json` se escriben en la carpeta en vez de descargarse, y la
+aplicacion dice donde quedo cada uno.
+
+**La carpeta solo se puede elegir donde el navegador lo permite**: Chrome en
+Windows y en Android, si; Safari en iPad y iPhone no implementa el selector de
+carpetas, asi que ahi los archivos se descargan a *Archivos* como siempre. Es
+una limitacion del navegador, no de la aplicacion, y la pantalla lo dice en vez
+de esconderlo. Si la carpeta se mueve o se revoca el permiso, el archivo no se
+pierde: se descarga y se avisa.
+
 ## Armar la obra desde el plano
 
 Cargar a mano los tramos de un parque eolico son varios cientos de tareas. Si
@@ -730,6 +764,7 @@ js/schedule.js          programa maestro: rendimientos, fechas por tramo y ruta 
 js/overlap.js           que tramos van por el mismo lugar (zanjas compartidas)
 js/report.js            parte diario: lo del dia, rendimiento real y proyeccion
 js/parque.js            esquema de capas de obra electrica y armado de la obra
+js/obra.js              datos de la obra y la carpeta donde deja sus archivos
 js/app.js               union de todo y logica de pantalla
 sw.js                   service worker (uso sin conexion)
 manifest.webmanifest    instalacion como aplicacion

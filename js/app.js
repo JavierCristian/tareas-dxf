@@ -12,7 +12,8 @@ import {
     saveTask, saveTasks, listTasks, deleteTask, newId, storageMode,
     saveResource, saveResources, listResources, deleteResource,
     savePlace, savePlaces, listPlaces, deletePlace,
-    saveActivity, saveActivities, listActivities, deleteActivity
+    saveActivity, saveActivities, listActivities, deleteActivity,
+    saveHandle, getHandle, deleteHandle
 } from './db.js';
 import {
     STATUSES, PRIORITIES, statusOf, priorityOf, createTask, elementRef, taskAnchor,
@@ -50,13 +51,17 @@ import {
 } from './edits.js';
 import { dayReport } from './report.js';
 import {
+    createObra, obraOf, canPickFolder, folderUnavailableReason, pickFolder,
+    folderReady, writeFile, monthFolder, safeName, readImage, FOLDERS, CALENDARS_HINT
+} from './obra.js';
+import {
     classifyLayers, summarize as summarizeScheme, verifyTriadas, nameTrenches,
     SUGGESTED_ACTIVITIES, layersFor, typesFor, sortTrenches, trenchRuns
 } from './parque.js';
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '23';
+export const APP_VERSION = '24';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -86,6 +91,8 @@ const state = {
     placeDraft: null,       // ubicacion en edicion
     activityDraft: null,    // actividad en edicion
     bulkDraft: null,        // carga de tramos desde una capa
+    setup: null,            // nueva obra en curso, antes de elegir el plano
+    folderHandle: null,     // carpeta de obra del proyecto abierto
     wizard: null,           // asistente que arma la obra desde las capas
     timeline: null,         // {from, to, days, date, playing, timer} cuando el cursor esta activo
     splitTarget: null,      // figura que se esta dividiendo
@@ -116,6 +123,7 @@ function init() {
     fillSelect($('#schedule-calendar'), CALENDARS);
 
     wireWelcome();
+    wireSetup();
     wireTopbar();
     wirePanel();
     wireModals();
@@ -180,7 +188,7 @@ function showUpdateBanner() {
 /* ------------------------------------------------------------------ */
 
 function wireWelcome() {
-    const dropzone = $('#dropzone');
+    const dropzone = $('#setup-dropzone');
     const input = $('#file-input');
 
     // En iOS/iPadOS el filtro por extension deja los .dxf en gris dentro de
@@ -210,6 +218,8 @@ function wireWelcome() {
     });
     window.addEventListener('dragover', (e) => e.preventDefault());
     window.addEventListener('drop', (e) => e.preventDefault());
+
+    $('#btn-new-obra').addEventListener('click', openSetup);
 
     const importInput = $('#import-input');
     $('#btn-import-project').addEventListener('click', () => importInput.click());
@@ -268,6 +278,216 @@ async function readFileText(file) {
     });
 }
 
+/* ------------------------------------------------------------------ */
+/* Nueva obra: el paso previo al plano                                 */
+/* ------------------------------------------------------------------ */
+
+function openSetup() {
+    state.setup = { step: 1, obra: createObra({ start: todayDate() }), folder: null };
+    const calendar = $('#obra-calendar');
+    calendar.innerHTML = '';
+    for (const option of CALENDARS) calendar.append(new Option(option.label, option.id));
+    calendar.title = CALENDARS_HINT;
+
+    $('#obra-name').value = '';
+    for (const id of ['code', 'place', 'client', 'contractor', 'manager']) $(`#obra-${id}`).value = '';
+    $('#obra-start').value = state.setup.obra.start;
+    calendar.value = state.setup.obra.calendar;
+    $('#obra-currency').value = state.setup.obra.currency;
+    for (const which of ['client', 'contractor']) {
+        const img = $(`#obra-logo-${which}-img`);
+        img.hidden = true;
+        img.removeAttribute('src');
+        $(`#obra-logo-${which}`).value = '';
+    }
+
+    $('#welcome').classList.add('hidden');
+    $('#setup').classList.remove('hidden');
+    renderSetup();
+    setTimeout(() => $('#obra-name').focus(), 60);
+}
+
+function closeSetup() {
+    state.setup = null;
+    $('#setup').classList.add('hidden');
+    $('#welcome').classList.remove('hidden');
+}
+
+function renderSetup() {
+    const setup = state.setup;
+    if (!setup) return;
+    for (const item of $$('#setup-steps li')) {
+        const step = Number(item.dataset.step);
+        item.classList.toggle('on', step === setup.step);
+        item.classList.toggle('done', step < setup.step);
+    }
+    for (const panel of $$('.setup-panel')) {
+        panel.classList.toggle('hidden', Number(panel.dataset.panel) !== setup.step);
+    }
+    $('#btn-setup-back').hidden = setup.step === 1;
+    const next = $('#btn-setup-next');
+    // El ultimo paso no tiene boton: avanza al elegir el plano.
+    next.hidden = setup.step === 3;
+    next.textContent = setup.step === 2 ? 'Continuar al plano' : 'Siguiente';
+
+    if (setup.step === 2) renderSetupFolder();
+    if (setup.step === 3) {
+        const obra = setup.obra;
+        const bits = [obra.name];
+        if (obra.code) bits.push(obra.code);
+        bits.push(setup.folder ? `carpeta ${setup.folder.name}` : 'sin carpeta, se descarga');
+        $('#setup-summary').textContent = bits.join(' · ');
+    }
+}
+
+/** El bloque de la carpeta: elegirla, cambiarla, o explicar por que no se puede. */
+function renderSetupFolder() {
+    const box = $('#setup-folder');
+    const state2 = $('#setup-folder-state');
+    box.innerHTML = '';
+
+    const db = $('#setup-db');
+    db.innerHTML = '';
+    for (const texto of ['El plano DXF completo', 'Las actividades y sus tramos',
+        'El avance registrado, con la fecha de cada parte', 'Los recursos y las instalaciones']) {
+        const li = document.createElement('li');
+        li.textContent = texto;
+        db.append(li);
+    }
+
+    if (!canPickFolder()) {
+        state2.textContent = 'no disponible aqui';
+        const note = document.createElement('p');
+        note.className = 'setup-note';
+        note.textContent = folderUnavailableReason();
+        box.append(note);
+        return;
+    }
+
+    const setup = state.setup;
+    state2.textContent = setup.folder ? setup.folder.name : 'sin elegir';
+
+    const pick = document.createElement('button');
+    pick.type = 'button';
+    pick.className = 'btn' + (setup.folder ? '' : ' primary');
+    pick.textContent = setup.folder ? 'Cambiar carpeta' : 'Elegir carpeta…';
+    pick.addEventListener('click', async () => {
+        try {
+            const chosen = await pickFolder();
+            if (!chosen) return;
+            setup.folder = chosen;
+            setup.obra.folderName = chosen.name;
+            renderSetupFolder();
+        } catch (error) {
+            console.error(error);
+            alert('No se pudo usar esa carpeta.\n\n' + (error.message || error));
+        }
+    });
+    box.append(pick);
+
+    const note = document.createElement('p');
+    note.className = 'setup-note';
+    if (setup.folder) {
+        note.textContent = `Dentro de ${setup.folder.name} se crearon: `
+            + Object.values(FOLDERS).join(', ') + '.';
+    } else {
+        note.textContent = 'Si no eliges ninguna, los partes y las planillas se descargan '
+            + 'a la carpeta de descargas, como hasta ahora. Se puede elegir despues.';
+    }
+    box.append(note);
+}
+
+function readSetupForm() {
+    const setup = state.setup;
+    if (!setup) return null;
+    Object.assign(setup.obra, {
+        name: $('#obra-name').value.trim(),
+        code: $('#obra-code').value.trim(),
+        place: $('#obra-place').value.trim(),
+        client: $('#obra-client').value.trim(),
+        contractor: $('#obra-contractor').value.trim(),
+        manager: $('#obra-manager').value.trim(),
+        start: $('#obra-start').value || '',
+        calendar: $('#obra-calendar').value,
+        currency: $('#obra-currency').value
+    });
+    return setup.obra;
+}
+
+function wireSetup() {
+    $('#btn-setup-cancel').addEventListener('click', closeSetup);
+    $('#btn-setup-back').addEventListener('click', () => {
+        if (!state.setup) return;
+        state.setup.step = Math.max(1, state.setup.step - 1);
+        renderSetup();
+    });
+    $('#setup-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const setup = state.setup;
+        if (!setup) return;
+        if (setup.step === 1) {
+            const obra = readSetupForm();
+            if (!obra.name) return $('#obra-name').focus();
+        }
+        setup.step = Math.min(3, setup.step + 1);
+        renderSetup();
+    });
+
+    for (const which of ['client', 'contractor']) {
+        $(`#obra-logo-${which}`).addEventListener('change', async (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file || !state.setup) return;
+            try {
+                const data = await readImage(file);
+                state.setup.obra[which === 'client' ? 'logoClient' : 'logoContractor'] = data;
+                const img = $(`#obra-logo-${which}-img`);
+                img.src = data;
+                img.hidden = false;
+            } catch (error) {
+                alert(error.message || 'No se pudo leer la imagen.');
+            }
+        });
+    }
+}
+
+/**
+ * Deja lista la carpeta de la obra abierta, pidiendo permiso si el navegador lo
+ * olvido. Devuelve null cuando no hay carpeta, que es lo normal en iPad.
+ */
+/**
+ * Guarda un archivo de la obra: en la carpeta elegida si la hay, y si no se
+ * descarga como siempre. Es el unico camino de salida, para que el parte, las
+ * planillas y los respaldos terminen todos en el mismo sitio.
+ */
+async function saveOut(folder, fileName, content, type = 'text/plain;charset=utf-8') {
+    const name = safeName(fileName, 'archivo');
+    const handle = await obraFolder({ ask: true });
+    if (!handle) {
+        download(name, content, type);
+        return '';
+    }
+    try {
+        const path = await writeFile(handle, folder, name, content, type);
+        toast(`Guardado en ${path}`);
+        return path;
+    } catch (error) {
+        // Si la carpeta se movio o se quito el permiso, no se pierde el archivo.
+        console.warn('No se pudo escribir en la carpeta de obra:', error);
+        download(name, content, type);
+        toast('No se pudo escribir en la carpeta de obra: se descargo.');
+        return '';
+    }
+}
+
+async function obraFolder({ ask = false } = {}) {
+    if (!state.project) return null;
+    if (!state.folderHandle) {
+        state.folderHandle = await getHandle(state.project.id).catch(() => null);
+    }
+    if (!state.folderHandle) return null;
+    return await folderReady(state.folderHandle, { ask }) ? state.folderHandle : null;
+}
+
 async function importDxfFile(file) {
     if (!/\.dxf$/i.test(file.name) && file.type !== 'application/dxf') {
         if (!confirm('El archivo no termina en .dxf. ¿Intentar abrirlo igual?')) return;
@@ -287,9 +507,15 @@ async function importDxfFile(file) {
         const chosen = await askLayers(scene.layers, new Set(scene.layers.map((l) => l.name)), 'Capas del archivo');
         if (!chosen) return;
 
+        // Los datos de la obra vienen del paso previo; si se entro por otro
+        // camino se usa el nombre del archivo, como antes.
+        const obra = state.setup ? readSetupForm() : null;
         const project = {
             id: newId('proy'),
-            name: file.name.replace(/\.dxf$/i, ''),
+            name: (obra && obra.name) || file.name.replace(/\.dxf$/i, ''),
+            obra: obra || createObra({ name: file.name.replace(/\.dxf$/i, '') }),
+            scheduleStart: (obra && obra.start) || '',
+            workdays: (obra && obra.calendar) || 'todos',
             fileName: file.name,
             units: scene.units,
             dxfText: text,
@@ -305,6 +531,15 @@ async function importDxfFile(file) {
             updatedAt: Date.now()
         };
         await saveProject(project);
+        // La carpeta se guarda aparte: es un permiso del navegador, no un dato.
+        if (state.setup && state.setup.folder) {
+            await saveHandle(project.id, state.setup.folder.handle);
+            state.folderHandle = state.setup.folder.handle;
+        } else {
+            state.folderHandle = null;
+        }
+        state.setup = null;
+        $('#setup').classList.add('hidden');
         if (scene.truncated) {
             toast('El plano es muy grande: se cargo una parte de las entidades.');
         }
@@ -342,6 +577,9 @@ async function openProject(id) {
 
 function loadIntoApp(project, scene, tasks, resources = [], places = [], activities = []) {
     state.project = project;
+    // La carpeta se recupera al vuelo; el navegador puede pedir permiso otra vez.
+    state.folderHandle = null;
+    getHandle(project.id).then((handle) => { state.folderHandle = handle || null; }).catch(() => {});
     if (!Array.isArray(project.edits)) project.edits = [];
     state.allShapes = scene.shapes;
     state.unitScale = metersPerUnit(scene.units);
@@ -1032,12 +1270,13 @@ function wirePanel() {
             activities: state.activities,
             metersPerUnit: state.unitScale
         });
-        download(`${state.project.name}-tareas.csv`, csv, 'text/csv;charset=utf-8');
+        saveOut(FOLDERS.datos, `${state.project.name}-tareas.csv`, csv, 'text/csv;charset=utf-8');
     });
     $('#btn-export-elements').addEventListener('click', () => {
         const withElements = state.tasks.filter((task) => task.elements.length);
         if (!withElements.length) return toast('Ninguna tarea tiene tramos vinculados.');
-        download(
+        saveOut(
+            FOLDERS.datos,
             `${state.project.name}-tramos.csv`,
             elementsToCsv(withElements, state.shapesById, state.unitScale, state.activities),
             'text/csv;charset=utf-8'
@@ -1050,7 +1289,7 @@ function wirePanel() {
             places: state.places,
             activities: state.activities
         });
-        download(`${state.project.name}.json`, json, 'application/json');
+        saveOut(FOLDERS.respaldos, `${state.project.name}.json`, json, 'application/json');
         toast('Copia generada (incluye plano, recursos, ubicaciones y divisiones).');
     });
 }
@@ -4019,14 +4258,32 @@ function renderReport() {
     const head = document.createElement('header');
     head.className = 'report-head';
     head.innerHTML = `
+        <img class="report-logo" alt="" hidden>
         <div class="grow">
             <h1></h1>
             <div class="report-sub"></div>
+            <div class="report-parties"></div>
         </div>
-        <div class="when"><span>Parte diario</span><strong></strong></div>`;
-    head.querySelector('h1').textContent = state.project.name;
-    head.querySelector('.report-sub').textContent =
-        `${state.shapes.length} elementos · ${state.activities.length} actividades · ${state.tasks.length} tramos`;
+        <div class="when"><span>Parte diario</span><strong></strong></div>
+        <img class="report-logo" alt="" hidden>`;
+
+    // El membrete lleva los logos y las partes del contrato: es lo que se firma.
+    const obra = obraOf(state.project);
+    const logos = head.querySelectorAll('.report-logo');
+    for (const [i, src] of [obra.logoClient, obra.logoContractor].entries()) {
+        if (!src) continue;
+        logos[i].src = src;
+        logos[i].hidden = false;
+    }
+    head.querySelector('h1').textContent = obra.name || state.project.name;
+    const sub = [obra.code, obra.place].filter(Boolean).join(' · ');
+    head.querySelector('.report-sub').textContent = sub
+        || `${state.activities.length} actividades · ${state.tasks.length} tramos`;
+    const partes = [];
+    if (obra.client) partes.push(`Mandante: ${obra.client}`);
+    if (obra.contractor) partes.push(`Contratista: ${obra.contractor}`);
+    if (obra.manager) partes.push(`Administrador: ${obra.manager}`);
+    head.querySelector('.report-parties').textContent = partes.join(' · ');
     head.querySelector('.when strong').textContent = report.dateLabel;
     sheet.append(head);
 
@@ -4380,7 +4637,8 @@ ${css}
 </style></head>
 <body>${clone.outerHTML}</body></html>`;
 
-    download(`${state.project.name}-parte-${state.reportDate}.html`, html, 'text/html;charset=utf-8');
+    saveOut(monthFolder(state.reportDate), `${state.project.name} parte ${state.reportDate}.html`,
+        html, 'text/html;charset=utf-8');
     toast('Informe descargado: se abre en cualquier navegador y se puede enviar por correo.');
 }
 
@@ -4721,7 +4979,8 @@ function wireResources() {
 
     $('#btn-export-resources').addEventListener('click', () => {
         if (!state.resources.length) return toast('No hay recursos para exportar.');
-        download(
+        saveOut(
+            FOLDERS.datos,
             `${state.project.name}-recursos.csv`,
             resourcesToCsv(state.resources, state.tasks),
             'text/csv;charset=utf-8'
@@ -4999,7 +5258,8 @@ function wirePlaces() {
 
     $('#btn-export-places').addEventListener('click', () => {
         if (!state.places.length) return toast('No hay ubicaciones para exportar.');
-        download(
+        saveOut(
+            FOLDERS.datos,
             `${state.project.name}-ubicaciones.csv`,
             placesToCsv(state.places, state.resources),
             'text/csv;charset=utf-8'

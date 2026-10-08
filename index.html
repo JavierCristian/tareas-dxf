@@ -29,11 +29,7 @@
             </div>
         </div>
 
-        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Abrir archivo DXF">
-            <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path d="M12 16V4m0 0L8 8m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <strong>Abrir archivo DXF</strong>
-            <span>Tocar para buscar, o arrastrar el archivo aqui</span>
-        </div>
+        <button class="btn primary big" id="btn-new-obra">Nueva obra</button>
         <input type="file" id="file-input" accept=".dxf,application/dxf,text/plain" hidden>
 
         <div class="welcome-actions">
@@ -235,6 +231,121 @@
         </aside>
     </main>
 </div>
+
+
+<!-- ----------------------------- Nueva obra ----------------------------- -->
+<section id="setup" class="screen hidden">
+    <div class="welcome-card setup-card">
+        <header class="setup-head">
+            <h1>Nueva obra</h1>
+            <button class="ghost small" id="btn-setup-cancel" type="button">Cancelar</button>
+        </header>
+        <ol class="setup-steps" id="setup-steps">
+            <li class="on" data-step="1"><span>1</span> La obra</li>
+            <li data-step="2"><span>2</span> Donde se guarda</li>
+            <li data-step="3"><span>3</span> El plano</li>
+        </ol>
+
+        <form id="setup-form" class="form">
+            <!-- Paso 1 -->
+            <div class="setup-panel" data-panel="1">
+                <label>Nombre de la obra
+                    <input type="text" id="obra-name" maxlength="120" required
+                           placeholder="Ej: Parque Eolico Llanos del Viento">
+                </label>
+                <div class="form-row">
+                    <label>Codigo o contrato
+                        <input type="text" id="obra-code" maxlength="60" placeholder="Ej: LA-331">
+                    </label>
+                    <label>Ubicacion
+                        <input type="text" id="obra-place" maxlength="120" placeholder="Comuna, region">
+                    </label>
+                </div>
+                <div class="form-row">
+                    <label>Mandante
+                        <input type="text" id="obra-client" maxlength="120">
+                    </label>
+                    <label>Contratista
+                        <input type="text" id="obra-contractor" maxlength="120">
+                    </label>
+                </div>
+                <div class="form-row">
+                    <label>Administrador de obra
+                        <input type="text" id="obra-manager" maxlength="120" placeholder="Quien firma el parte">
+                    </label>
+                    <label>Inicio de obra
+                        <input type="date" id="obra-start">
+                    </label>
+                </div>
+                <div class="form-row">
+                    <label>Se trabaja
+                        <select id="obra-calendar"></select>
+                    </label>
+                    <label>Moneda
+                        <select id="obra-currency">
+                            <option value="CLP">Peso chileno (CLP)</option>
+                            <option value="UF">Unidad de fomento (UF)</option>
+                            <option value="USD">Dolar (USD)</option>
+                            <option value="EUR">Euro (EUR)</option>
+                        </select>
+                    </label>
+                </div>
+
+                <div class="linked">
+                    <div class="linked-head"><strong>Logos del parte diario</strong><span class="muted">opcional</span></div>
+                    <div class="form-row logo-row">
+                        <label class="logo-pick">Mandante
+                            <input type="file" id="obra-logo-client" accept="image/*">
+                            <img id="obra-logo-client-img" alt="" hidden>
+                        </label>
+                        <label class="logo-pick">Contratista
+                            <input type="file" id="obra-logo-contractor" accept="image/*">
+                            <img id="obra-logo-contractor-img" alt="" hidden>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Paso 2 -->
+            <div class="setup-panel hidden" data-panel="2">
+                <p class="modal-hint">La obra misma —el plano, las tareas, el avance y los
+                    recursos— se guarda siempre <strong>en este dispositivo</strong> y funciona
+                    sin conexion. Eso no se elige. Lo que se elige aqui es la carpeta donde
+                    van a caer los archivos que quieres tener fuera: los partes diarios, las
+                    planillas y los respaldos.</p>
+
+                <div class="linked">
+                    <div class="linked-head"><strong>Carpeta de obra</strong><span id="setup-folder-state" class="muted"></span></div>
+                    <div id="setup-folder"></div>
+                </div>
+
+                <div class="linked">
+                    <div class="linked-head"><strong>Lo que se guarda en este dispositivo</strong></div>
+                    <ul class="setup-list" id="setup-db"></ul>
+                </div>
+            </div>
+
+            <!-- Paso 3 -->
+            <div class="setup-panel hidden" data-panel="3">
+                <p class="modal-hint">Por ultimo, el plano. Si viene clasificado por tipo de
+                    zanja y por circuito, al cargarlo se ofrece armar la obra completa.</p>
+                <div id="setup-dropzone" class="dropzone" tabindex="0" role="button" aria-label="Abrir archivo DXF">
+                    <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path d="M12 16V4m0 0L8 8m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <strong>Abrir archivo DXF</strong>
+                    <span>Tocar para buscar, o arrastrar el archivo aqui</span>
+                </div>
+                <p class="muted" id="setup-summary"></p>
+            </div>
+
+            <footer class="modal-foot setup-foot">
+                <button type="button" class="btn" id="btn-setup-back" hidden>Atras</button>
+                <div>
+                    <button type="submit" class="btn primary" id="btn-setup-next">Siguiente</button>
+                </div>
+            </footer>
+        </form>
+    </div>
+</section>
 
 <!-- --------------------------- Asistente de importacion --------------------------- -->
 <div id="wizard-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="wizard-modal-title">

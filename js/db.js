@@ -5,12 +5,13 @@
  */
 
 const DB_NAME = 'dxf-tareas';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const STORE_PROJECTS = 'projects';
 const STORE_TASKS = 'tasks';
 const STORE_RESOURCES = 'resources';
 const STORE_PLACES = 'places';
 const STORE_ACTIVITIES = 'activities';
+const STORE_HANDLES = 'handles';
 const LS_KEY = 'dxf-tareas:fallback';
 
 let dbPromise = null;
@@ -43,6 +44,12 @@ function openDb() {
             if (!db.objectStoreNames.contains(STORE_ACTIVITIES)) {
                 const store = db.createObjectStore(STORE_ACTIVITIES, { keyPath: 'id' });
                 store.createIndex('projectId', 'projectId', { unique: false });
+            }
+            // v5: la carpeta de obra elegida por el usuario. Va aparte del
+            // proyecto porque es un objeto del navegador, no un dato: no se
+            // puede exportar a .json ni guardar en localStorage.
+            if (!db.objectStoreNames.contains(STORE_HANDLES)) {
+                db.createObjectStore(STORE_HANDLES, { keyPath: 'id' });
             }
         };
         request.onsuccess = () => resolve(request.result);
@@ -338,4 +345,44 @@ export async function deleteActivity(id) {
 export function newId(prefix = 'id') {
     const random = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36));
     return `${prefix}_${random.replace(/-/g, '').slice(0, 16)}`;
+}
+
+
+/* ------------------------- carpeta de obra -------------------------------- */
+
+/*
+ * El permiso sobre una carpeta se guarda como un objeto del navegador
+ * (FileSystemDirectoryHandle). IndexedDB lo acepta tal cual; localStorage no,
+ * asi que sin IndexedDB simplemente no hay carpeta y todo se descarga.
+ */
+
+export async function saveHandle(id, handle) {
+    return withDb(
+        async (db) => {
+            await tx(db, [STORE_HANDLES], 'readwrite', (t) => t.objectStore(STORE_HANDLES).put({ id, handle }));
+            return true;
+        },
+        () => false
+    );
+}
+
+export async function getHandle(id) {
+    return withDb(
+        async (db) => {
+            const t = db.transaction([STORE_HANDLES], 'readonly');
+            const row = await req(t.objectStore(STORE_HANDLES).get(id));
+            return row ? row.handle : null;
+        },
+        () => null
+    );
+}
+
+export async function deleteHandle(id) {
+    return withDb(
+        async (db) => {
+            await tx(db, [STORE_HANDLES], 'readwrite', (t) => t.objectStore(STORE_HANDLES).delete(id));
+            return true;
+        },
+        () => false
+    );
 }
