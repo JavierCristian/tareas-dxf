@@ -72,6 +72,17 @@ Desde ahi, el parte diario, los CSV de tareas, tramos, recursos y ubicaciones y
 la copia `.json` se escriben en la carpeta en vez de descargarse, y la
 aplicacion dice donde quedo cada uno.
 
+### El espacio del dispositivo
+
+El navegador puede borrar los datos de un sitio cuando le falta espacio, y en
+terreno la base del dispositivo es a veces la unica copia del dia. La aplicacion
+pide **almacenamiento persistente**, que la saca de lo descartable, y la pestana
+*Capas* dice en que quedo y cuanto espacio ocupa la obra.
+
+No se puede obligar: Chrome lo concede con el uso o al instalarla, y Safari al
+agregarla a la pantalla de inicio. Por eso la pantalla lo dice en vez de darlo
+por hecho, y recuerda que el respaldo diario en la carpeta es la red de abajo.
+
 ### Respaldo automatico
 
 El respaldo no es un boton que haya que acordarse de apretar. Cada cambio

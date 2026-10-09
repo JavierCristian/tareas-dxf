@@ -80,7 +80,8 @@ import { dayReport } from './report.js';
 import {
     createObra, obraOf, canPickFolder, folderUnavailableReason, pickFolder,
     folderReady, writeFile, monthFolder, safeName, readImage, FOLDERS, CALENDARS_HINT,
-    backupName, pruneBackups, listBackups, BACKUP_IDLE_MS
+    backupName, pruneBackups, listBackups, BACKUP_IDLE_MS,
+    askPersistence, storageUse, isInstalled, formatBytes
 } from './obra.js';
 import {
     classifyLayers, summarize as summarizeScheme, verifyTriadas, nameTrenches,
@@ -89,7 +90,7 @@ import {
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '25';
+export const APP_VERSION = '26';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -616,6 +617,37 @@ function renderObraBox() {
             + (backup.path ? ` en ${backup.path}` : '') + '. Se guarda un archivo por dia.';
     } else {
         note.textContent = 'Se respalda solo cada vez que cambia algo, un archivo por dia.';
+    }
+}
+
+/**
+ * Estado del almacenamiento: si el navegador se comprometio a no borrar la obra
+ * y cuanto espacio queda. En terreno la base del dispositivo es a veces la
+ * unica copia del dia, asi que conviene verlo, no suponerlo.
+ */
+async function renderStorageBox() {
+    const label = $('#obra-storage-state');
+    const note = $('#obra-storage-note');
+    if (!label || !note) return;
+
+    const [permanent, use] = await Promise.all([askPersistence(), storageUse()]);
+    const bits = [];
+    if (use) bits.push(`${formatBytes(use.usage)} de ${formatBytes(use.quota)}`);
+    label.textContent = bits.join(' · ');
+
+    if (!permanent.supported) {
+        note.textContent = 'Este navegador no dice si puede borrar los datos del sitio. '
+            + 'Con la carpeta de obra elegida, el respaldo diario te cubre igual.';
+    } else if (permanent.persisted) {
+        note.textContent = 'Almacenamiento protegido: el navegador no va a borrar la obra '
+            + 'para hacer espacio.';
+    } else if (isInstalled()) {
+        note.textContent = 'El navegador todavia no protege los datos. Suele concederlo con el uso; '
+            + 'mientras tanto el respaldo diario en la carpeta es tu red.';
+    } else {
+        note.textContent = 'Sin proteger. Instala la aplicacion en la pantalla de inicio '
+            + '(en el iPad: Compartir → Añadir a pantalla de inicio) y el navegador deja de '
+            + 'poder borrar la obra para hacer espacio.';
     }
 }
 
@@ -1495,6 +1527,7 @@ function renderAll() {
     renderElementPanel();
     renderWizardButton();
     renderObraBox();
+    renderStorageBox();
 }
 
 /**

@@ -221,3 +221,54 @@ export async function listBackups(handle) {
     }
     return rows.sort((a, b) => b.name.localeCompare(a.name, 'es'));
 }
+
+/* ------------------------- espacio en el dispositivo ---------------------- */
+
+/*
+ * El navegador puede borrar la base de datos de un sitio cuando le falta
+ * espacio. En una aplicacion de terreno eso es inaceptable: ahi vive el avance
+ * del dia, que a veces es la unica copia. Pedir "almacenamiento persistente"
+ * lo saca de la lista de lo descartable.
+ *
+ * Chrome lo concede solo si la aplicacion esta instalada o tiene uso suficiente;
+ * Safari lo concede al instalarla en la pantalla de inicio. No se puede obligar,
+ * asi que lo que corresponde es pedirlo y decir en que quedo.
+ */
+export async function askPersistence() {
+    if (!navigator.storage || typeof navigator.storage.persist !== 'function') {
+        return { supported: false, persisted: false };
+    }
+    try {
+        const already = typeof navigator.storage.persisted === 'function'
+            ? await navigator.storage.persisted()
+            : false;
+        if (already) return { supported: true, persisted: true };
+        return { supported: true, persisted: await navigator.storage.persist() };
+    } catch (error) {
+        return { supported: false, persisted: false };
+    }
+}
+
+/** Cuanto ocupa la obra y cuanto deja el dispositivo. */
+export async function storageUse() {
+    if (!navigator.storage || typeof navigator.storage.estimate !== 'function') return null;
+    try {
+        const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+        return { usage, quota };
+    } catch (error) {
+        return null;
+    }
+}
+
+/** Si la aplicacion se abrio instalada y no dentro del navegador. */
+export function isInstalled() {
+    return window.matchMedia('(display-mode: standalone)').matches
+        || window.navigator.standalone === true;
+}
+
+/** Megas o gigas, lo que se lea mejor. */
+export function formatBytes(bytes) {
+    const mb = (bytes || 0) / (1024 * 1024);
+    if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+    return `${mb.toFixed(mb < 10 ? 1 : 0)} MB`;
+}
