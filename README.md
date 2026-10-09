@@ -72,6 +72,29 @@ Desde ahi, el parte diario, los CSV de tareas, tramos, recursos y ubicaciones y
 la copia `.json` se escriben en la carpeta en vez de descargarse, y la
 aplicacion dice donde quedo cada uno.
 
+### Respaldo automatico
+
+El respaldo no es un boton que haya que acordarse de apretar. Cada cambio
+—registrar avance, mover un tramo, cargar recursos— programa uno, y se escribe
+cuando la mano se detiene: registrar veinte tramos seguidos deja un archivo y no
+veinte. Al dejar la pestana se escribe lo que estuviera pendiente, para que
+cerrar el navegador no se lleve la jornada.
+
+Se guarda **un archivo por dia**, que se va sobrescribiendo, en `Respaldos`:
+
+```
+Respaldos/2026-10-09 Parque Llanos del Viento.json
+Respaldos/2026-10-10 Parque Llanos del Viento.json
+```
+
+Cada uno es la obra completa, con el plano adentro, asi que se puede volver a
+cualquier jornada con *Restaurar copia* y un solo archivo. Son unos 700 KB por
+dia y se conservan 180; los mas viejos se van borrando solos. El plano se copia
+ademas a `Planos` la primera vez, para abrirlo en AutoCAD sin ir a buscarlo.
+
+La pestana *Capas* muestra la carpeta y cuando fue el ultimo respaldo, y deja
+elegir la carpeta de una obra que se creo sin ella.
+
 **La carpeta solo se puede elegir donde el navegador lo permite**: Chrome en
 Windows y en Android, si; Safari en iPad y iPhone no implementa el selector de
 carpetas, asi que ahi los archivos se descargan a *Archivos* como siempre. Es

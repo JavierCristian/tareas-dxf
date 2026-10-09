@@ -356,33 +356,46 @@ export function newId(prefix = 'id') {
  * asi que sin IndexedDB simplemente no hay carpeta y todo se descarga.
  */
 
+/*
+ * Estas tres no pasan por withDb a proposito. Un handle que el navegador no
+ * sepa clonar haria fallar la escritura, y withDb interpreta cualquier fallo
+ * como "IndexedDB no sirve" y degrada TODA la aplicacion a localStorage, que
+ * ni siquiera guarda el plano. Perder la carpeta es un contratiempo; perder la
+ * base de datos por eso seria un desastre.
+ */
+
 export async function saveHandle(id, handle) {
-    return withDb(
-        async (db) => {
-            await tx(db, [STORE_HANDLES], 'readwrite', (t) => t.objectStore(STORE_HANDLES).put({ id, handle }));
-            return true;
-        },
-        () => false
-    );
+    if (useFallback) return false;
+    try {
+        const db = await openDb();
+        await tx(db, [STORE_HANDLES], 'readwrite', (t) => t.objectStore(STORE_HANDLES).put({ id, handle }));
+        return true;
+    } catch (error) {
+        console.warn('No se pudo recordar la carpeta de obra:', error);
+        return false;
+    }
 }
 
 export async function getHandle(id) {
-    return withDb(
-        async (db) => {
-            const t = db.transaction([STORE_HANDLES], 'readonly');
-            const row = await req(t.objectStore(STORE_HANDLES).get(id));
-            return row ? row.handle : null;
-        },
-        () => null
-    );
+    if (useFallback) return null;
+    try {
+        const db = await openDb();
+        const t = db.transaction([STORE_HANDLES], 'readonly');
+        const row = await req(t.objectStore(STORE_HANDLES).get(id));
+        return row ? row.handle : null;
+    } catch (error) {
+        console.warn('No se pudo leer la carpeta de obra:', error);
+        return null;
+    }
 }
 
 export async function deleteHandle(id) {
-    return withDb(
-        async (db) => {
-            await tx(db, [STORE_HANDLES], 'readwrite', (t) => t.objectStore(STORE_HANDLES).delete(id));
-            return true;
-        },
-        () => false
-    );
+    if (useFallback) return false;
+    try {
+        const db = await openDb();
+        await tx(db, [STORE_HANDLES], 'readwrite', (t) => t.objectStore(STORE_HANDLES).delete(id));
+        return true;
+    } catch (error) {
+        return false;
+    }
 }

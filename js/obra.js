@@ -169,3 +169,55 @@ export function readImage(file, maxSide = 420) {
         reader.readAsDataURL(file);
     });
 }
+
+/* --------------------------- respaldo automatico -------------------------- */
+
+/*
+ * El respaldo no es un boton que haya que acordarse de apretar. Cada vez que
+ * algo cambia se programa uno, y se escribe cuando la mano se detiene: asi
+ * registrar veinte tramos seguidos escribe un archivo, no veinte.
+ *
+ * Se guarda un archivo por dia, que se va sobrescribiendo. Queda un historial
+ * con el que se puede volver a cualquier jornada sin llenar el disco: una obra
+ * de medio año son unos 150 archivos de medio mega.
+ */
+
+/** Cuanto se espera, sin cambios, antes de escribir el respaldo. */
+export const BACKUP_IDLE_MS = 45000;
+
+/** Dias de respaldo que se conservan antes de ir borrando los mas viejos. */
+export const BACKUP_KEEP_DAYS = 180;
+
+/** Nombre del respaldo de un dia. El orden alfabetico es el cronologico. */
+export function backupName(obraName, date) {
+    return `${String(date).slice(0, 10)} ${safeName(obraName, 'obra')}.json`;
+}
+
+/**
+ * Borra los respaldos que sobran, de los mas antiguos hacia adelante.
+ * @returns {Promise<number>} cuantos se borraron.
+ */
+export async function pruneBackups(handle, keep = BACKUP_KEEP_DAYS) {
+    const dir = await handle.getDirectoryHandle(FOLDERS.respaldos, { create: true });
+    const names = [];
+    for await (const [name, entry] of dir.entries()) {
+        if (entry.kind === 'file' && /^\d{4}-\d{2}-\d{2} .+\.json$/.test(name)) names.push(name);
+    }
+    if (names.length <= keep) return 0;
+    names.sort();
+    const extra = names.slice(0, names.length - keep);
+    for (const name of extra) await dir.removeEntry(name).catch(() => {});
+    return extra.length;
+}
+
+/** Los respaldos que hay en la carpeta, del mas nuevo al mas viejo. */
+export async function listBackups(handle) {
+    const dir = await handle.getDirectoryHandle(FOLDERS.respaldos, { create: true });
+    const rows = [];
+    for await (const [name, entry] of dir.entries()) {
+        if (entry.kind !== 'file' || !/\.json$/i.test(name)) continue;
+        const file = await entry.getFile();
+        rows.push({ name, size: file.size, at: file.lastModified });
+    }
+    return rows.sort((a, b) => b.name.localeCompare(a.name, 'es'));
+}

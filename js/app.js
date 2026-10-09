@@ -8,13 +8,40 @@ import { readDxf, KIND_LABELS, growBounds, metersPerUnit } from './dxf.js';
 import { Viewer, formatNumber } from './viewer.js';
 import { anchorOf, measure } from './scene.js';
 import {
-    saveProject, getProject, listProjects, deleteProject,
-    saveTask, saveTasks, listTasks, deleteTask, newId, storageMode,
-    saveResource, saveResources, listResources, deleteResource,
-    savePlace, savePlaces, listPlaces, deletePlace,
-    saveActivity, saveActivities, listActivities, deleteActivity,
-    saveHandle, getHandle, deleteHandle
+    getProject, listProjects, deleteProject,
+    listTasks, newId, storageMode,
+    listResources, listPlaces, listActivities,
+    saveHandle, getHandle, deleteHandle,
+    saveProject as dbSaveProject,
+    saveTask as dbSaveTask, saveTasks as dbSaveTasks, deleteTask as dbDeleteTask,
+    saveResource as dbSaveResource, saveResources as dbSaveResources, deleteResource as dbDeleteResource,
+    savePlace as dbSavePlace, savePlaces as dbSavePlaces, deletePlace as dbDeletePlace,
+    saveActivity as dbSaveActivity, saveActivities as dbSaveActivities, deleteActivity as dbDeleteActivity
 } from './db.js';
+
+/*
+ * Todo lo que cambia la obra pasa por aqui, y de paso programa el respaldo.
+ * Envolver las funciones en vez de ir llamando a mano desde cada sitio evita
+ * justamente lo que se olvida: el unico punto nuevo que no respalde.
+ */
+const withBackup = (fn) => async (...args) => {
+    const result = await fn(...args);
+    touchBackup();
+    return result;
+};
+const saveProject = withBackup(dbSaveProject);
+const saveTask = withBackup(dbSaveTask);
+const saveTasks = withBackup(dbSaveTasks);
+const deleteTask = withBackup(dbDeleteTask);
+const saveResource = withBackup(dbSaveResource);
+const saveResources = withBackup(dbSaveResources);
+const deleteResource = withBackup(dbDeleteResource);
+const savePlace = withBackup(dbSavePlace);
+const savePlaces = withBackup(dbSavePlaces);
+const deletePlace = withBackup(dbDeletePlace);
+const saveActivity = withBackup(dbSaveActivity);
+const saveActivities = withBackup(dbSaveActivities);
+const deleteActivity = withBackup(dbDeleteActivity);
 import {
     STATUSES, PRIORITIES, statusOf, priorityOf, createTask, elementRef, taskAnchor,
     isOverdue, filterTasks, summarize, tasksToCsv, projectToJson, download,
@@ -52,7 +79,8 @@ import {
 import { dayReport } from './report.js';
 import {
     createObra, obraOf, canPickFolder, folderUnavailableReason, pickFolder,
-    folderReady, writeFile, monthFolder, safeName, readImage, FOLDERS, CALENDARS_HINT
+    folderReady, writeFile, monthFolder, safeName, readImage, FOLDERS, CALENDARS_HINT,
+    backupName, pruneBackups, listBackups, BACKUP_IDLE_MS
 } from './obra.js';
 import {
     classifyLayers, summarize as summarizeScheme, verifyTriadas, nameTrenches,
@@ -61,7 +89,7 @@ import {
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '24';
+export const APP_VERSION = '25';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -93,6 +121,8 @@ const state = {
     bulkDraft: null,        // carga de tramos desde una capa
     setup: null,            // nueva obra en curso, antes de elegir el plano
     folderHandle: null,     // carpeta de obra del proyecto abierto
+    folderFor: null,        // de que proyecto es esa carpeta
+    backup: null,           // {timer, at, path, saving, pending} del respaldo automatico
     wizard: null,           // asistente que arma la obra desde las capas
     timeline: null,         // {from, to, days, date, playing, timer} cuando el cursor esta activo
     splitTarget: null,      // figura que se esta dividiendo
@@ -124,6 +154,7 @@ function init() {
 
     wireWelcome();
     wireSetup();
+    wireObraBox();
     wireTopbar();
     wirePanel();
     wireModals();
@@ -479,6 +510,148 @@ async function saveOut(folder, fileName, content, type = 'text/plain;charset=utf
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Respaldo automatico en la carpeta de obra                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Anota que algo cambio y programa un respaldo. No escribe al tiro: espera a
+ * que la mano se detenga, porque registrar veinte tramos seguidos debe dejar un
+ * archivo y no veinte.
+ */
+function touchBackup() {
+    if (!state.project) return;
+    if (!state.backup) state.backup = { timer: null, at: null, path: '', saving: false, pending: false };
+    const backup = state.backup;
+    backup.pending = true;
+    if (backup.timer) clearTimeout(backup.timer);
+    backup.timer = setTimeout(() => { backup.timer = null; runBackup(); }, BACKUP_IDLE_MS);
+    renderObraBox();
+}
+
+/**
+ * Escribe el respaldo del dia en la carpeta de obra. Un archivo por dia, que se
+ * va sobrescribiendo: queda historial sin llenar el disco.
+ */
+async function runBackup({ manual = false } = {}) {
+    if (!state.project) return false;
+    if (!state.backup) state.backup = { timer: null, at: null, path: '', saving: false, pending: false };
+    const backup = state.backup;
+    if (backup.saving) return false;
+
+    const handle = await obraFolder({ ask: manual });
+    if (!handle) {
+        if (manual) toast('Esta obra no tiene carpeta: elige una mas arriba.');
+        renderObraBox();
+        return false;
+    }
+
+    backup.saving = true;
+    renderObraBox();
+    try {
+        const json = projectToJson(state.project, state.tasks, {
+            includeDxf: true,
+            resources: state.resources,
+            places: state.places,
+            activities: state.activities
+        });
+        const name = backupName(state.project.name, todayDate());
+        backup.path = await writeFile(handle, FOLDERS.respaldos, name, json, 'application/json');
+        // El plano, una sola vez: no cambia, y en la carpeta sirve para abrirlo
+        // en AutoCAD sin tener que buscar de donde salio.
+        if (!backup.plan && state.project.dxfText) {
+            const dxf = safeName(state.project.fileName || `${state.project.name}.dxf`, 'plano.dxf');
+            await writeFile(handle, FOLDERS.planos, dxf, state.project.dxfText, 'application/dxf')
+                .then(() => { backup.plan = true; })
+                .catch(() => {});
+        }
+        backup.at = Date.now();
+        backup.pending = false;
+        // Se podan los mas viejos, sin que un fallo aqui invalide el respaldo.
+        await pruneBackups(handle).catch(() => 0);
+        if (manual) toast(`Respaldado en ${backup.path}`);
+        return true;
+    } catch (error) {
+        console.warn('No se pudo respaldar:', error);
+        if (manual) alert('No se pudo respaldar.\n\n' + (error.message || error));
+        return false;
+    } finally {
+        backup.saving = false;
+        renderObraBox();
+    }
+}
+
+/** El bloque de la pestana Capas: carpeta de obra y estado del respaldo. */
+function renderObraBox() {
+    const box = $('#obra-box');
+    if (!box || !state.project) return;
+    const folderBtn = $('#btn-obra-folder');
+    const stateEl = $('#obra-folder-state');
+    const note = $('#obra-backup-state');
+
+    if (!canPickFolder()) {
+        stateEl.textContent = 'no disponible aqui';
+        folderBtn.hidden = true;
+        $('#btn-obra-backup').hidden = true;
+        note.textContent = folderUnavailableReason();
+        return;
+    }
+    folderBtn.hidden = false;
+    $('#btn-obra-backup').hidden = false;
+
+    const obra = obraOf(state.project);
+    const has = !!state.folderHandle;
+    stateEl.textContent = has ? (obra.folderName || 'elegida') : 'sin elegir';
+    folderBtn.textContent = has ? 'Cambiar carpeta' : 'Elegir carpeta…';
+
+    const backup = state.backup;
+    if (!has) {
+        note.textContent = 'Sin carpeta no hay respaldo automatico: los archivos se descargan.';
+    } else if (backup && backup.saving) {
+        note.textContent = 'Respaldando…';
+    } else if (backup && backup.pending) {
+        note.textContent = 'Hay cambios sin respaldar; se guardan solos en unos segundos.';
+    } else if (backup && backup.at) {
+        note.textContent = `Respaldado a las ${new Date(backup.at).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}`
+            + (backup.path ? ` en ${backup.path}` : '') + '. Se guarda un archivo por dia.';
+    } else {
+        note.textContent = 'Se respalda solo cada vez que cambia algo, un archivo por dia.';
+    }
+}
+
+function wireObraBox() {
+    // Al dejar la pestana se escribe lo que estuviera pendiente: si se cierra el
+    // navegador antes de que venza la espera, el respaldo se perderia.
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'hidden') return;
+        const backup = state.backup;
+        if (!backup || !backup.pending || backup.saving) return;
+        if (backup.timer) { clearTimeout(backup.timer); backup.timer = null; }
+        runBackup();
+    });
+
+    $('#btn-obra-folder').addEventListener('click', async () => {
+        if (!state.project) return;
+        try {
+            const chosen = await pickFolder();
+            if (!chosen) return;
+            state.folderHandle = chosen.handle;
+            state.folderFor = state.project.id;
+            const guardada = await saveHandle(state.project.id, chosen.handle);
+            if (!guardada) toast('La carpeta sirve ahora, pero habra que elegirla de nuevo al reabrir.');
+            state.project.obra = { ...obraOf(state.project), folderName: chosen.name };
+            await saveProject(state.project);
+            renderObraBox();
+            // Al elegirla, lo primero que hace es dejar un respaldo dentro.
+            runBackup({ manual: true });
+        } catch (error) {
+            console.error(error);
+            alert('No se pudo usar esa carpeta.\n\n' + (error.message || error));
+        }
+    });
+    $('#btn-obra-backup').addEventListener('click', () => runBackup({ manual: true }));
+}
+
 async function obraFolder({ ask = false } = {}) {
     if (!state.project) return null;
     if (!state.folderHandle) {
@@ -533,10 +706,15 @@ async function importDxfFile(file) {
         await saveProject(project);
         // La carpeta se guarda aparte: es un permiso del navegador, no un dato.
         if (state.setup && state.setup.folder) {
-            await saveHandle(project.id, state.setup.folder.handle);
+            // Se recuerda en memoria aunque la base no la sepa guardar: en esta
+            // sesion la carpeta funciona igual.
             state.folderHandle = state.setup.folder.handle;
+            state.folderFor = project.id;
+            const guardada = await saveHandle(project.id, state.setup.folder.handle);
+            if (!guardada) toast('La carpeta sirve ahora, pero habra que elegirla de nuevo al reabrir.');
         } else {
             state.folderHandle = null;
+            state.folderFor = null;
         }
         state.setup = null;
         $('#setup').classList.add('hidden');
@@ -578,8 +756,19 @@ async function openProject(id) {
 function loadIntoApp(project, scene, tasks, resources = [], places = [], activities = []) {
     state.project = project;
     // La carpeta se recupera al vuelo; el navegador puede pedir permiso otra vez.
-    state.folderHandle = null;
-    getHandle(project.id).then((handle) => { state.folderHandle = handle || null; }).catch(() => {});
+    if (state.backup && state.backup.timer) clearTimeout(state.backup.timer);
+    state.backup = null;
+    // Si la carpeta ya esta en memoria para esta obra no se vuelve a pedir: se
+    // acaba de elegir y la base puede no haberla podido guardar.
+    if (state.folderFor !== project.id) {
+        state.folderHandle = null;
+        state.folderFor = project.id;
+        getHandle(project.id).then((handle) => {
+            if (state.folderFor !== project.id) return;
+            state.folderHandle = handle || null;
+            renderObraBox();
+        }).catch(() => {});
+    }
     if (!Array.isArray(project.edits)) project.edits = [];
     state.allShapes = scene.shapes;
     state.unitScale = metersPerUnit(scene.units);
@@ -1305,6 +1494,7 @@ function renderAll() {
     renderSelectionCard();
     renderElementPanel();
     renderWizardButton();
+    renderObraBox();
 }
 
 /**
