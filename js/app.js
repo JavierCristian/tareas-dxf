@@ -84,13 +84,16 @@ import {
     askPersistence, storageUse, isInstalled, formatBytes
 } from './obra.js';
 import {
+    whoAmI, setWhoAmI, buildPart, partMeters, partAuthors, readPart, mergePart, partFileName
+} from './partes.js';
+import {
     classifyLayers, summarize as summarizeScheme, verifyTriadas, nameTrenches,
     SUGGESTED_ACTIVITIES, layersFor, typesFor, sortTrenches, trenchRuns
 } from './parque.js';
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '26';
+export const APP_VERSION = '27';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -156,6 +159,7 @@ function init() {
     wireWelcome();
     wireSetup();
     wireObraBox();
+    wirePartes();
     wireTopbar();
     wirePanel();
     wireModals();
@@ -626,6 +630,8 @@ function renderObraBox() {
  * unica copia del dia, asi que conviene verlo, no suponerlo.
  */
 async function renderStorageBox() {
+    const who = $('#who-am-i');
+    if (who && who.value !== whoAmI()) who.value = whoAmI();
     const label = $('#obra-storage-state');
     const note = $('#obra-storage-note');
     if (!label || !note) return;
@@ -649,6 +655,168 @@ async function renderStorageBox() {
             + '(en el iPad: Compartir → Añadir a pantalla de inicio) y el navegador deja de '
             + 'poder borrar la obra para hacer espacio.';
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Partes de avance entre dispositivos                                 */
+/* ------------------------------------------------------------------ */
+
+function openPartModal() {
+    if (!state.project) return;
+    const hoy = todayDate();
+    $('#part-from').value = hoy;
+    $('#part-to').value = hoy;
+    $('#part-author').value = whoAmI();
+    renderPartPreview();
+    $('#part-modal').classList.remove('hidden');
+    setTimeout(() => ($('#part-author').value ? $('#part-from') : $('#part-author')).focus(), 60);
+}
+
+function closePartModal() {
+    $('#part-modal').classList.add('hidden');
+}
+
+/** Lo que va a llevar el parte, antes de generarlo. */
+function currentPart() {
+    return buildPart(state.project, state.tasks, {
+        from: $('#part-from').value,
+        to: $('#part-to').value,
+        author: $('#part-author').value.trim(),
+        shapesById: state.shapesById,
+        metersPerUnit: state.unitScale
+    });
+}
+
+function renderPartPreview() {
+    const box = $('#part-preview');
+    const part = currentPart();
+    const metros = partMeters(part);
+    box.className = 'wizard-check ' + (part.avances.length ? 'good' : 'bad');
+    box.textContent = part.avances.length
+        ? `Lleva ${formatNumber(metros)} m de avance en ${part.avances.length} tramo(s).`
+        : 'No hay avance registrado en esas fechas: el parte saldria vacio.';
+    $('#btn-part-create').disabled = !part.avances.length;
+}
+
+async function submitPart() {
+    const author = $('#part-author').value.trim();
+    if (!author) return $('#part-author').focus();
+    setWhoAmI(author);
+    $('#who-am-i').value = author;
+
+    const part = currentPart();
+    if (!part.avances.length) return;
+    await saveOut(FOLDERS.partes, partFileName(part), JSON.stringify(part, null, 1), 'application/json');
+    closePartModal();
+    toast(`Parte de ${formatNumber(partMeters(part))} m generado. Mandalo por donde quieras.`);
+}
+
+/**
+ * Recibe el parte de otro dispositivo y lo funde. Se muestra lo que va a pasar
+ * y se pide confirmacion: fundir cambia la obra y conviene mirarlo antes.
+ */
+async function receivePart(file) {
+    if (!state.project) return;
+    showLoading('Leyendo el parte…');
+    try {
+        const part = readPart(await readFileText(file));
+        hideLoading();
+
+        // Se prueba sobre una copia para poder contar sin tocar nada.
+        const copia = state.tasks.map((task) => ({
+            ...task,
+            elements: (task.elements || []).map((ref) => ({ ...ref, spans: ref.spans ? [...ref.spans] : ref.spans }))
+        }));
+        const ensayo = mergePart(part, copia, {
+            shapesById: state.shapesById,
+            metersPerUnit: state.unitScale,
+            projectId: state.project.id
+        });
+
+        if (ensayo.otherObra) {
+            return alert('Ese parte es de otra obra, asi que sus tramos no corresponden a esta.');
+        }
+        if (!ensayo.changed) {
+            const yaEstaba = !ensayo.missing.length;
+            return alert(yaEstaba
+                ? 'Ese parte ya estaba cargado: no trae avance nuevo.'
+                : `Ese parte no calza con esta obra: ${ensayo.missing.length} tramo(s) no existen aqui.`);
+        }
+
+        const lineas = [
+            `Parte de ${ensayo.authors.join(', ') || 'alguien sin firmar'}`,
+            `${ensayo.days.join(', ')}`,
+            '',
+            `Suma ${formatNumber(ensayo.meters)} m en ${ensayo.changed} tramo(s):`,
+            ...ensayo.tasks.slice(0, 8).map((t) => `  · ${t.title}: ${formatNumber(t.meters)} m`)
+        ];
+        if (ensayo.tasks.length > 8) lineas.push(`  y ${ensayo.tasks.length - 8} tramo(s) mas`);
+        if (ensayo.known > 1) {
+            lineas.push('', `${formatNumber(ensayo.known)} m del parte ya estaban registrados aqui y no se suman otra vez.`
+                + ' Si otro supervisor reporto el mismo tramo, conviene revisarlo.');
+        }
+        if (ensayo.missing.length) {
+            lineas.push('', `${ensayo.missing.length} tramo(s) del parte no existen en esta obra y se omiten.`);
+        }
+        lineas.push('', '¿Cargarlo?');
+        if (!confirm(lineas.join('\n'))) return;
+
+        showLoading('Cargando el parte…');
+        const real = mergePart(part, state.tasks, {
+            shapesById: state.shapesById,
+            metersPerUnit: state.unitScale,
+            projectId: state.project.id
+        });
+        await saveTasks(state.tasks);
+        // Se archiva el original: el parte recibido es parte del registro.
+        const handle = await obraFolder();
+        if (handle) {
+            await writeFile(handle, `${FOLDERS.partes}/Recibidos`, partFileName(part),
+                JSON.stringify(part, null, 1), 'application/json').catch(() => {});
+        }
+        state.schedule = null;
+        hideLoading();
+        renderAll();
+        toast(`Cargado: ${formatNumber(real.meters)} m en ${real.changed} tramo(s).`);
+    } catch (error) {
+        hideLoading();
+        // Un parte mal formado es un caso previsto, no una falla: se le dice al
+        // usuario y no se ensucia la consola como si fuera un error del codigo.
+        console.warn('Parte rechazado:', error.message || error);
+        alert(error.message || 'No se pudo leer el parte.');
+    }
+}
+
+function renderPartNote() {
+    const note = $('#part-note');
+    if (!note) return;
+    const quien = whoAmI();
+    note.textContent = quien
+        ? `Tus avances se firman como "${quien}". Enviar un parte deja un archivo chico con lo que registraste; recibir uno lo funde con esta obra.`
+        : 'Pon tu nombre arriba y cada avance que registres queda firmado. Asi, al juntar los partes de varios supervisores, se sabe quien reporto que.';
+}
+
+function wirePartes() {
+    $('#who-am-i').addEventListener('change', (e) => {
+        setWhoAmI(e.target.value);
+        renderPartNote();
+    });
+    $('#btn-send-part').addEventListener('click', openPartModal);
+    $('#btn-receive-part').addEventListener('click', () => $('#part-input').click());
+    $('#part-input').addEventListener('change', async (e) => {
+        const file = e.target.files && e.target.files[0];
+        e.target.value = '';
+        if (file) await receivePart(file);
+    });
+    for (const id of ['#part-from', '#part-to', '#part-author']) {
+        $(id).addEventListener('change', renderPartPreview);
+    }
+    $('#part-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        submitPart();
+    });
+    for (const button of $$('#part-modal [data-close]')) button.addEventListener('click', closePartModal);
+    $('#part-modal').addEventListener('click', (e) => { if (e.target.id === 'part-modal') closePartModal(); });
 }
 
 function wireObraBox() {
@@ -1528,6 +1696,7 @@ function renderAll() {
     renderWizardButton();
     renderObraBox();
     renderStorageBox();
+    renderPartNote();
 }
 
 /**
@@ -4075,7 +4244,7 @@ async function submitAdvance() {
         from = Math.max(0, to - along);
     }
 
-    ref.spans = addSpan(ref, from, to, date, total);
+    ref.spans = addSpan(ref, from, to, date, total, whoAmI() || null);
     ref.done = isRefDone(ref, total);
     ref.doneAt = ref.done ? (refLastDate(ref) || date) : null;
     await saveAdvancedTask(task, `Avance de ${formatNumber(along)} registrado.`, { closePanel: true });
@@ -5991,6 +6160,7 @@ function wireModals() {
         if (!$('#resource-modal').classList.contains('hidden')) return closeResourceModal();
         if (!$('#split-modal').classList.contains('hidden')) return closeSplitModal();
         if (!$('#bulk-modal').classList.contains('hidden')) return closeBulkModal();
+        if (!$('#part-modal').classList.contains('hidden')) return closePartModal();
         if (!$('#wizard-modal').classList.contains('hidden')) return closeWizard();
         if (!$('#advance-modal').classList.contains('hidden')) return closeAdvanceModal();
         if (!$('#activity-modal').classList.contains('hidden')) return closeActivityModal();

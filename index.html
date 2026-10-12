@@ -225,7 +225,19 @@
                 </div>
                 <div class="linked">
                     <div class="linked-head"><strong>Este dispositivo</strong><span id="obra-storage-state" class="muted"></span></div>
+                    <label class="who-row">Quien reporta desde aqui
+                        <input type="text" id="who-am-i" maxlength="80" placeholder="Tu nombre">
+                    </label>
                     <p class="setup-note" id="obra-storage-note"></p>
+                </div>
+                <div class="linked">
+                    <div class="linked-head"><strong>Partes de avance</strong><span class="muted">entre dispositivos</span></div>
+                    <div class="layer-actions">
+                        <button class="ghost small" id="btn-send-part">Enviar mi parte…</button>
+                        <button class="ghost small" id="btn-receive-part">Recibir parte…</button>
+                        <input type="file" id="part-input" accept=".json,application/json" hidden>
+                    </div>
+                    <p class="setup-note" id="part-note"></p>
                 </div>
                 <div class="layer-actions">
                     <button class="ghost small" id="btn-layers-all">Ver todas</button>
@@ -244,6 +256,39 @@
     </main>
 </div>
 
+
+<!-- --------------------------- Enviar mi parte --------------------------- -->
+<div id="part-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="part-modal-title">
+    <div class="modal-card">
+        <header class="modal-head">
+            <h2 id="part-modal-title">Enviar mi parte</h2>
+            <button class="icon-btn" data-close="part-modal" aria-label="Cerrar">✕</button>
+        </header>
+        <form id="part-form" class="form">
+            <p class="modal-hint">Sale un archivo chico con el avance que registraste, para
+                mandarlo por donde sea. Quien lo reciba lo funde con su obra y los metros se
+                suman; si lo manda dos veces no pasa nada, no se cuenta de nuevo.</p>
+            <div class="form-row">
+                <label>Desde
+                    <input type="date" id="part-from">
+                </label>
+                <label>Hasta
+                    <input type="date" id="part-to">
+                </label>
+            </div>
+            <label>Quien reporta
+                <input type="text" id="part-author" maxlength="80" placeholder="Tu nombre">
+            </label>
+            <div id="part-preview" class="wizard-check"></div>
+            <footer class="modal-foot">
+                <button type="button" class="btn" data-close="part-modal">Cancelar</button>
+                <div>
+                    <button type="submit" class="btn primary" id="btn-part-create">Generar parte</button>
+                </div>
+            </footer>
+        </form>
+    </div>
+</div>
 
 <!-- ----------------------------- Nueva obra ----------------------------- -->
 <section id="setup" class="screen hidden">

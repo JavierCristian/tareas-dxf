@@ -70,17 +70,23 @@ export function normalizeSpans(spans, total) {
         .map((span) => ({
             from: Math.max(0, Math.min(total, Number(span.from) || 0)),
             to: Math.max(0, Math.min(total, Number(span.to) || 0)),
-            date: span.date || null
+            date: span.date || null,
+            // Quien lo reporto. Sin firmar en los avances de antes y en los
+            // que se registran sin haber dicho quien es uno.
+            by: span.by || null
         }))
         .filter((span) => span.to - span.from > 1e-9)
-        .sort((a, b) => (a.from - b.from) || String(a.date || '').localeCompare(String(b.date || '')));
+        .sort((a, b) => (a.from - b.from)
+            || String(a.date || '').localeCompare(String(b.date || ''))
+            || String(a.by || '').localeCompare(String(b.by || '')));
 
     const merged = [];
     for (const span of clean) {
         const last = merged[merged.length - 1];
         if (last && span.from <= last.to + 1e-9) {
-            // Pegados y del mismo dia: son un solo avance.
-            if (last.date === span.date) {
+            // Pegados, del mismo dia y de la misma persona: un solo avance. Si
+            // los hizo otro se guardan aparte, porque el parte dice quien fue.
+            if (last.date === span.date && (last.by || null) === (span.by || null)) {
                 last.to = Math.max(last.to, span.to);
                 continue;
             }
@@ -89,7 +95,7 @@ export function normalizeSpans(spans, total) {
             // ejecuto cada parte, que es lo que necesitan el parte diario y
             // la curva de avance.
             const from = Math.max(span.from, last.to);
-            if (span.to - from > 1e-9) merged.push({ from, to: span.to, date: span.date });
+            if (span.to - from > 1e-9) merged.push({ from, to: span.to, date: span.date, by: span.by });
             continue;
         }
         merged.push({ ...span });
@@ -102,9 +108,9 @@ export function spansLength(spans) {
 }
 
 /** Agrega un tramo ejecutado y devuelve los tramos ya fusionados. */
-export function addSpan(ref, from, to, date, total) {
+export function addSpan(ref, from, to, date, total, by = null) {
     const previous = refSpans(ref, total);
-    return normalizeSpans([...previous, { from, to, date }], total);
+    return normalizeSpans([...previous, { from, to, date, by }], total);
 }
 
 /**

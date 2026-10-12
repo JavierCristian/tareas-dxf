@@ -72,6 +72,34 @@ Desde ahi, el parte diario, los CSV de tareas, tramos, recursos y ubicaciones y
 la copia `.json` se escriben en la carpeta en vez de descargarse, y la
 aplicacion dice donde quedo cada uno.
 
+### Partes de avance entre dispositivos
+
+Cada dispositivo tiene su propia base y no ve la del otro. Un **parte** es el
+puente: un archivo chico —**1 KB** frente a los 679 KB de la obra completa— con
+solo el avance de unos dias, que viaja por donde sea y al llegar se funde.
+
+En la pestana *Capas* se pone **quien reporta desde este dispositivo**. Desde
+ahi cada avance queda firmado, y *Enviar mi parte* genera el archivo del rango
+de fechas que se elija. El que lo recibe ve antes lo que va a pasar —quien
+firma, que dias, cuantos metros y en que tramos— y recien ahi decide cargarlo.
+El original se archiva en `Partes diarios/Recibidos`.
+
+**Por que fundir es seguro.** El avance solo crece: los metros hechos no se
+deshacen, asi que juntar dos partes es unir intervalos y nunca hay que
+preguntar cual gana. Cargar el mismo parte dos veces no suma nada.
+
+**El calce no es por identificador de tramo.** Al restaurar la obra en otro
+dispositivo los identificadores se reasignan, de modo que los del iPad del
+supervisor no son los del administrador. Lo que si es igual en todos lados es
+el elemento del plano, cuyo identificador es el handle del DXF que viene en el
+archivo; con el titulo del tramo, que dice la actividad, el par queda unico.
+
+**Cuando dos reportan lo mismo.** Si dos supervisores avanzan en el mismo tramo,
+los dos miden desde cero porque ninguno ve lo del otro. La union da el total
+correcto, pero eso taparia el doble reporte: por eso al cargar se avisa cuantos
+metros del parte **ya estaban registrados**, que es la señal de que hay que ir a
+mirar.
+
 ### El espacio del dispositivo
 
 El navegador puede borrar los datos de un sitio cuando le falta espacio, y en
@@ -799,6 +827,7 @@ js/overlap.js           que tramos van por el mismo lugar (zanjas compartidas)
 js/report.js            parte diario: lo del dia, rendimiento real y proyeccion
 js/parque.js            esquema de capas de obra electrica y armado de la obra
 js/obra.js              datos de la obra y la carpeta donde deja sus archivos
+js/partes.js            partes de avance entre dispositivos y su fusion
 js/app.js               union de todo y logica de pantalla
 sw.js                   service worker (uso sin conexion)
 manifest.webmanifest    instalacion como aplicacion

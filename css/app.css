@@ -1238,3 +1238,15 @@ textarea { resize: vertical; }
     padding: 5px;
 }
 .btn.big { width: 100%; padding: 14px; font-size: 15px; }
+
+/* Quien reporta desde este dispositivo: firma cada avance. */
+.who-row { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.who-row input {
+    background: #131b25;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 7px 9px;
+    font-size: 13.5px;
+    min-height: 36px;
+}
