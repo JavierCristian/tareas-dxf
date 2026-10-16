@@ -16,7 +16,8 @@ import {
     saveTask as dbSaveTask, saveTasks as dbSaveTasks, deleteTask as dbDeleteTask,
     saveResource as dbSaveResource, saveResources as dbSaveResources, deleteResource as dbDeleteResource,
     savePlace as dbSavePlace, savePlaces as dbSavePlaces, deletePlace as dbDeletePlace,
-    saveActivity as dbSaveActivity, saveActivities as dbSaveActivities, deleteActivity as dbDeleteActivity
+    saveActivity as dbSaveActivity, saveActivities as dbSaveActivities, deleteActivity as dbDeleteActivity,
+    listEntries, saveEntries as dbSaveEntries
 } from './db.js';
 
 /*
@@ -42,6 +43,7 @@ const deletePlace = withBackup(dbDeletePlace);
 const saveActivity = withBackup(dbSaveActivity);
 const saveActivities = withBackup(dbSaveActivities);
 const deleteActivity = withBackup(dbDeleteActivity);
+const saveEntries = withBackup(dbSaveEntries);
 import {
     STATUSES, PRIORITIES, statusOf, priorityOf, createTask, elementRef, taskAnchor,
     isOverdue, filterTasks, summarize, tasksToCsv, projectToJson, download,
@@ -87,13 +89,17 @@ import {
     whoAmI, setWhoAmI, buildPart, partMeters, partAuthors, readPart, mergePart, partFileName
 } from './partes.js';
 import {
+    ATTENDANCE, MACHINE_STATES, attendanceOf, machineStateOf, createEntry,
+    sheetFor, hoursOf, daySummary, isDirect, hoursToCsv
+} from './asistencia.js';
+import {
     classifyLayers, summarize as summarizeScheme, verifyTriadas, nameTrenches,
     SUGGESTED_ACTIVITIES, layersFor, typesFor, sortTrenches, trenchRuns
 } from './parque.js';
 
 /* Version visible de la aplicacion. Debe ir a la par del CACHE de sw.js:
    asi se puede comprobar de un vistazo que version esta corriendo. */
-export const APP_VERSION = '27';
+export const APP_VERSION = '28';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -124,6 +130,8 @@ const state = {
     activityDraft: null,    // actividad en edicion
     bulkDraft: null,        // carga de tramos desde una capa
     setup: null,            // nueva obra en curso, antes de elegir el plano
+    entries: [],            // asistencia diaria registrada
+    sheet: null,            // hoja de asistencia abierta: {date, rows}
     folderHandle: null,     // carpeta de obra del proyecto abierto
     folderFor: null,        // de que proyecto es esa carpeta
     backup: null,           // {timer, at, path, saving, pending} del respaldo automatico
@@ -160,6 +168,7 @@ function init() {
     wireSetup();
     wireObraBox();
     wirePartes();
+    wireAttendance();
     wireTopbar();
     wirePanel();
     wireModals();
@@ -658,6 +667,212 @@ async function renderStorageBox() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Asistencia del dia                                                  */
+/* ------------------------------------------------------------------ */
+
+function openAttendance(date) {
+    if (!state.project) return;
+    state.sheet = { date: date || todayDate(), rows: [] };
+    $('#attendance-date').value = state.sheet.date;
+    renderAttendance();
+    $('#attendance').classList.remove('hidden');
+}
+
+function closeAttendance() {
+    $('#attendance').classList.add('hidden');
+    state.sheet = null;
+}
+
+function renderAttendance() {
+    const sheet = state.sheet;
+    if (!sheet) return;
+    // Las filas se rehacen solo al cambiar de fecha: mientras se pasa lista hay
+    // ediciones sin guardar que no se pueden perder en cada redibujo.
+    if (!sheet.rows.length || sheet.builtFor !== sheet.date) {
+        sheet.rows = sheetFor(state.resources, state.entries, sheet.date);
+        sheet.builtFor = sheet.date;
+    }
+
+    const summary = $('#attendance-summary');
+    summary.innerHTML = '';
+    const resumen = daySummary(state.resources, state.entries, sheet.date);
+    const vivo = liveSummary();
+    summary.append(chip(`${vivo.working} de ${vivo.people} en turno`, '#22c55e'));
+    summary.append(chip(`${formatNumber(vivo.hours)} horas hombre`, null));
+    summary.append(chip(`${vivo.direct} directos · ${vivo.indirect} indirectos`, null));
+    if (vivo.machines) summary.append(chip(`${vivo.operating} de ${vivo.machines} maquinas operativas`, vivo.idle ? '#f59e0b' : null));
+    if (resumen.saved) summary.append(chip(`${resumen.saved} ya registrados`, '#2f81f7'));
+
+    const people = $('#attendance-people');
+    const machines = $('#attendance-machines');
+    people.innerHTML = '';
+    machines.innerHTML = '';
+    let nPeople = 0;
+    let nMachines = 0;
+    for (const row of sheet.rows) {
+        if (row.resource.type === 'instalacion') continue;
+        if (row.resource.type === 'persona') { people.append(attendanceRow(row)); nPeople++; }
+        else { machines.append(attendanceRow(row)); nMachines++; }
+    }
+    if (!nPeople) people.innerHTML = '<li class="empty">No hay personal en obra esa fecha.</li>';
+    if (!nMachines) machines.innerHTML = '<li class="empty">No hay maquinaria en obra esa fecha.</li>';
+    $('#attendance-people-count').textContent = `${nPeople}`;
+    $('#attendance-machine-count').textContent = `${nMachines}`;
+}
+
+/** El resumen de lo que hay en pantalla, incluso sin guardar todavia. */
+function liveSummary() {
+    const rows = (state.sheet && state.sheet.rows) || [];
+    const people = rows.filter((r) => r.resource.type === 'persona');
+    const machines = rows.filter((r) => r.resource.type === 'maquina');
+    const working = people.filter((r) => attendanceOf(r.status).hours);
+    const direct = working.filter((r) => isDirect(r.resource)).length;
+    return {
+        people: people.length,
+        working: working.length,
+        direct,
+        indirect: working.length - direct,
+        hours: working.reduce((sum, r) => sum + (Number(r.hours) || 0), 0),
+        machines: machines.length,
+        operating: machines.filter((r) => machineStateOf(r.status).ok).length,
+        idle: machines.filter((r) => !machineStateOf(r.status).ok).length
+    };
+}
+
+function attendanceRow(row) {
+    const machine = row.resource.type !== 'persona';
+    const item = document.createElement('li');
+    item.className = 'attendance-row' + (row.saved ? ' saved' : '');
+    item.innerHTML = `
+        <span class="who"><strong></strong><small></small></span>
+        <select class="state"></select>
+        <span class="hours"><input type="number" min="0" max="24" step="0.5"><em>h</em></span>
+        <input type="text" class="note" maxlength="80" placeholder="Observacion">
+        <span class="acc muted"></span>`;
+
+    item.querySelector('strong').textContent = row.resource.name;
+    item.querySelector('small').textContent = machine
+        ? (row.resource.role || 'Maquinaria')
+        : `${row.resource.role || 'Sin cargo'} · ${isDirect(row.resource) ? 'directo' : 'indirecto'}`;
+
+    const select = item.querySelector('.state');
+    for (const option of (machine ? MACHINE_STATES : ATTENDANCE)) {
+        select.append(new Option(option.label, option.id));
+    }
+    select.value = row.status;
+    const paint = () => {
+        const def = machine ? machineStateOf(row.status) : attendanceOf(row.status);
+        select.style.borderColor = def.color;
+        // A una maquina no se le piden horas, y a quien no vino tampoco.
+        const cuenta = machine ? false : attendanceOf(row.status).hours;
+        item.querySelector('.hours').hidden = !cuenta;
+    };
+    select.addEventListener('change', () => {
+        row.status = select.value;
+        if (!machine && !attendanceOf(row.status).hours) row.hours = 0;
+        else if (!machine && !row.hours) row.hours = hoursPerDayOf(row.resource);
+        hours.value = row.hours ? String(row.hours) : '';
+        paint();
+        renderAttendanceSummary();
+    });
+
+    const hours = item.querySelector('.hours input');
+    hours.value = row.hours ? String(row.hours) : '';
+    hours.addEventListener('change', () => {
+        row.hours = Math.max(0, Math.min(24, Number(hours.value) || 0));
+        hours.value = row.hours ? String(row.hours) : '';
+        renderAttendanceSummary();
+    });
+
+    const note = item.querySelector('.note');
+    note.value = row.note || '';
+    note.addEventListener('change', () => { row.note = note.value.trim(); });
+
+    if (!machine) {
+        const h = hoursOf(row.resource.id, state.entries, state.sheet.date);
+        item.querySelector('.acc').textContent = h.before ? `${formatNumber(h.before)} h antes` : '';
+    } else item.querySelector('.acc').textContent = '';
+
+    paint();
+    return item;
+}
+
+/** Solo el encabezado, para no rehacer las filas que se estan editando. */
+function renderAttendanceSummary() {
+    const summary = $('#attendance-summary');
+    if (!summary || !state.sheet) return;
+    const vivo = liveSummary();
+    summary.innerHTML = '';
+    summary.append(chip(`${vivo.working} de ${vivo.people} en turno`, '#22c55e'));
+    summary.append(chip(`${formatNumber(vivo.hours)} horas hombre`, null));
+    summary.append(chip(`${vivo.direct} directos · ${vivo.indirect} indirectos`, null));
+    if (vivo.machines) summary.append(chip(`${vivo.operating} de ${vivo.machines} maquinas operativas`, vivo.idle ? '#f59e0b' : null));
+}
+
+async function saveAttendance() {
+    const sheet = state.sheet;
+    if (!sheet) return;
+    const quien = whoAmI();
+    const guardar = [];
+    for (const row of sheet.rows) {
+        const entry = row.entry || createEntry(state.project.id, {
+            resourceId: row.resource.id,
+            date: sheet.date
+        });
+        entry.status = row.status;
+        entry.hours = row.resource.type === 'persona' && attendanceOf(row.status).hours
+            ? (Number(row.hours) || 0) : 0;
+        entry.note = row.note || '';
+        entry.by = quien;
+        guardar.push(entry);
+        if (!row.entry) {
+            row.entry = entry;
+            state.entries.push(entry);
+        }
+        row.saved = true;
+    }
+    await saveEntries(guardar);
+    renderAttendance();
+    const vivo = liveSummary();
+    toast(`Asistencia del ${shortDate(sheet.date)} guardada: ${vivo.working} en turno, ${formatNumber(vivo.hours)} horas hombre.`);
+}
+
+function wireAttendance() {
+    $('#btn-attendance').addEventListener('click', () => openAttendance(state.sheet ? state.sheet.date : todayDate()));
+    $('#btn-attendance-close').addEventListener('click', closeAttendance);
+    $('#btn-attendance-today').addEventListener('click', () => {
+        $('#attendance-date').value = todayDate();
+        state.sheet.date = todayDate();
+        state.sheet.rows = [];
+        renderAttendance();
+    });
+    $('#attendance-date').addEventListener('change', (e) => {
+        if (!state.sheet) return;
+        state.sheet.date = e.target.value || todayDate();
+        state.sheet.rows = [];
+        renderAttendance();
+    });
+    $('#btn-attendance-all').addEventListener('click', () => {
+        if (!state.sheet) return;
+        // Pone a todos en turno con su jornada estandar: lo normal es que
+        // esten todos, y pasar lista es marcar las excepciones.
+        for (const row of state.sheet.rows) {
+            if (row.resource.type === 'persona') {
+                row.status = 'turno';
+                row.hours = row.hours || hoursPerDayOf(row.resource);
+            } else row.status = 'operativa';
+        }
+        renderAttendance();
+    });
+    $('#btn-attendance-save').addEventListener('click', saveAttendance);
+    $('#btn-attendance-csv').addEventListener('click', () => {
+        if (!state.sheet) return;
+        saveOut(FOLDERS.datos, `${state.project.name} horas ${state.sheet.date}.csv`,
+            hoursToCsv(state.resources, state.entries, state.sheet.date), 'text/csv;charset=utf-8');
+    });
+}
+
+/* ------------------------------------------------------------------ */
 /* Partes de avance entre dispositivos                                 */
 /* ------------------------------------------------------------------ */
 
@@ -944,8 +1159,9 @@ async function openProject(id) {
         const resources = await listResources(id);
         const places = await listPlaces(id);
         const activities = await listActivities(id);
+        const entries = await listEntries(id);
         hideLoading();
-        loadIntoApp(project, scene, tasks, resources, places, activities);
+        loadIntoApp(project, scene, tasks, resources, places, activities, entries);
     } catch (error) {
         hideLoading();
         console.error(error);
@@ -953,7 +1169,7 @@ async function openProject(id) {
     }
 }
 
-function loadIntoApp(project, scene, tasks, resources = [], places = [], activities = []) {
+function loadIntoApp(project, scene, tasks, resources = [], places = [], activities = [], entries = []) {
     state.project = project;
     // La carpeta se recupera al vuelo; el navegador puede pedir permiso otra vez.
     if (state.backup && state.backup.timer) clearTimeout(state.backup.timer);
@@ -976,6 +1192,7 @@ function loadIntoApp(project, scene, tasks, resources = [], places = [], activit
     state.resources = resources;
     state.places = places;
     state.activities = activities;
+    state.entries = entries;
     state.activeActivity = null;
     state.schedule = null;
     // Los tramos llevan el orden en que se ejecutan; los proyectos de antes no

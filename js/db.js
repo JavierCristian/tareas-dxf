@@ -5,13 +5,14 @@
  */
 
 const DB_NAME = 'dxf-tareas';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 const STORE_PROJECTS = 'projects';
 const STORE_TASKS = 'tasks';
 const STORE_RESOURCES = 'resources';
 const STORE_PLACES = 'places';
 const STORE_ACTIVITIES = 'activities';
 const STORE_HANDLES = 'handles';
+const STORE_ATTENDANCE = 'attendance';
 const LS_KEY = 'dxf-tareas:fallback';
 
 let dbPromise = null;
@@ -50,6 +51,11 @@ function openDb() {
             // puede exportar a .json ni guardar en localStorage.
             if (!db.objectStoreNames.contains(STORE_HANDLES)) {
                 db.createObjectStore(STORE_HANDLES, { keyPath: 'id' });
+            }
+            // v6: asistencia diaria del personal y estado de la maquinaria.
+            if (!db.objectStoreNames.contains(STORE_ATTENDANCE)) {
+                const store = db.createObjectStore(STORE_ATTENDANCE, { keyPath: 'id' });
+                store.createIndex('projectId', 'projectId', { unique: false });
             }
         };
         request.onsuccess = () => resolve(request.result);
@@ -347,6 +353,65 @@ export function newId(prefix = 'id') {
     return `${prefix}_${random.replace(/-/g, '').slice(0, 16)}`;
 }
 
+
+/* --------------------------- asistencia diaria ---------------------------- */
+
+export async function saveEntry(entry) {
+    entry.updatedAt = Date.now();
+    return withDb(
+        (db) => tx(db, [STORE_ATTENDANCE], 'readwrite', (t) => t.objectStore(STORE_ATTENDANCE).put(entry)),
+        () => {
+            const data = readFallback();
+            if (!data.attendance) data.attendance = [];
+            const i = data.attendance.findIndex((e) => e.id === entry.id);
+            if (i >= 0) data.attendance[i] = entry; else data.attendance.push(entry);
+            writeFallback(data);
+        }
+    );
+}
+
+export async function saveEntries(entries) {
+    if (!entries.length) return;
+    return withDb(
+        (db) => tx(db, [STORE_ATTENDANCE], 'readwrite', (t) => {
+            const store = t.objectStore(STORE_ATTENDANCE);
+            for (const entry of entries) {
+                entry.updatedAt = Date.now();
+                store.put(entry);
+            }
+        }),
+        () => {
+            const data = readFallback();
+            if (!data.attendance) data.attendance = [];
+            for (const entry of entries) {
+                const i = data.attendance.findIndex((e) => e.id === entry.id);
+                if (i >= 0) data.attendance[i] = entry; else data.attendance.push(entry);
+            }
+            writeFallback(data);
+        }
+    );
+}
+
+export async function listEntries(projectId) {
+    return withDb(
+        async (db) => {
+            const t = db.transaction([STORE_ATTENDANCE], 'readonly');
+            return req(t.objectStore(STORE_ATTENDANCE).index('projectId').getAll(projectId));
+        },
+        () => (readFallback().attendance || []).filter((e) => e.projectId === projectId)
+    );
+}
+
+export async function deleteEntry(id) {
+    return withDb(
+        (db) => tx(db, [STORE_ATTENDANCE], 'readwrite', (t) => t.objectStore(STORE_ATTENDANCE).delete(id)),
+        () => {
+            const data = readFallback();
+            data.attendance = (data.attendance || []).filter((e) => e.id !== id);
+            writeFallback(data);
+        }
+    );
+}
 
 /* ------------------------- carpeta de obra -------------------------------- */
 

@@ -155,6 +155,7 @@
                     <button class="ghost small" id="btn-new-machine">+ Maquinaria</button>
                     <button class="ghost small" id="btn-new-facility">+ Instalacion</button>
                     <button class="ghost small" id="btn-new-place">+ Punto en el plano</button>
+                    <button class="ghost small" id="btn-attendance">Asistencia del dia</button>
                     <button class="ghost small" id="btn-import-resources">Importar CSV</button>
                     <input type="file" id="resource-csv-input" accept=".csv,text/csv,text/plain" hidden>
                 </div>
@@ -256,6 +257,31 @@
     </main>
 </div>
 
+
+<!-- --------------------------- Asistencia del dia --------------------------- -->
+<div id="attendance" class="report hidden" role="dialog" aria-modal="true" aria-label="Asistencia del dia">
+    <header class="report-bar">
+        <strong>Asistencia</strong>
+        <input type="date" id="attendance-date" aria-label="Fecha">
+        <button class="ghost small" id="btn-attendance-today">Hoy</button>
+        <span class="grow"></span>
+        <button class="ghost small" id="btn-attendance-all">Todos en turno</button>
+        <button class="ghost small" id="btn-attendance-csv">Planilla de horas</button>
+        <button class="btn primary" id="btn-attendance-save">Guardar</button>
+        <button class="icon-btn" id="btn-attendance-close" aria-label="Cerrar">✕</button>
+    </header>
+    <div class="attendance-scroll">
+        <div id="attendance-summary" class="summary"></div>
+        <div class="linked">
+            <div class="linked-head"><strong>Personal</strong><span id="attendance-people-count" class="muted"></span></div>
+            <ul id="attendance-people" class="attendance-list"></ul>
+        </div>
+        <div class="linked">
+            <div class="linked-head"><strong>Maquinaria</strong><span id="attendance-machine-count" class="muted"></span></div>
+            <ul id="attendance-machines" class="attendance-list"></ul>
+        </div>
+    </div>
+</div>
 
 <!-- --------------------------- Enviar mi parte --------------------------- -->
 <div id="part-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="part-modal-title">

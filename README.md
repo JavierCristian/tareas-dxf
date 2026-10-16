@@ -41,7 +41,10 @@ sin servidor ni base de datos remota.
 13. **Emite el parte diario** de la obra: lo ejecutado ese dia, lo programado
     para el siguiente, el rendimiento real, la curva de avance y el plano,
     listo para imprimir o enviar (ver mas abajo).
-14. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar tareas,
+14. **Pasa la asistencia del dia** —personal y maquinaria— y lleva las horas
+    acumuladas de cada persona, con su planilla lista para el informe
+    (ver mas abajo).
+15. **Guarda todo en el dispositivo** (IndexedDB) y permite exportar tareas,
     recursos y ubicaciones a CSV, o una copia completa en `.json` que incluye el
     plano.
 
@@ -632,9 +635,10 @@ El boton **Importar CSV** de la pestaña *Recursos* lee una planilla de Excel.
 **Plantilla CSV** descarga un archivo de ejemplo con las columnas reconocidas:
 
 ```
-tipo;nombre;cargo;identificador;marca;cuadrilla;telefono;rendimiento_hora;
-unidad_rendimiento;horas_jornada;turno;desde;hasta;operador;
-combustible_l_hora;costo_hora;horometro;proxima_mantencion_h;estado;notas
+tipo;nombre;cargo;identificador;marca;cuadrilla;telefono;directo_indirecto;
+cantidad;atiende;rendimiento_hora;unidad_rendimiento;horas_jornada;turno;
+desde;hasta;operador;combustible_l_hora;costo_hora;unidad_costo;horometro;
+proxima_mantencion_h;estado;notas
 ```
 
 | Columna | Que lleva | Se acepta tambien |
@@ -646,6 +650,7 @@ combustible_l_hora;costo_hora;horometro;proxima_mantencion_h;estado;notas
 | `marca` | Fabricante | brand |
 | `cuadrilla` | **Define los frentes**: los que la comparten son uno | empresa, grupo, subcontrato |
 | `telefono` | | fono, celular |
+| `directo_indirecto` | Mano de obra directa o indirecta | directo, mo, clasificacion |
 | `cantidad` | Cuantas unidades hay de esta ficha | unidades, cant |
 | `atiende` | A cuanta gente sirve cada unidad | capacidad, personas, dotacion |
 | `rendimiento_hora` | Produccion por hora del equipo | rendimiento, produccion_hora |
@@ -726,6 +731,54 @@ de ella, y se compara con lo instalado.
 
 El numero de personas por unidad lo pone el usuario: la aplicacion no decide
 cuantos banos exige la norma, solo avisa cuando lo declarado no alcanza.
+
+### Asistencia del dia y control de horas
+
+El informe al mandante lleva la dotacion en una pagina y las horas en otra, y
+hoy las dos se escriben a mano, de modo que es normal que no calcen. **Asistencia
+del dia**, en la pestana *Recursos*, las produce de una vez.
+
+La hoja se abre **con todos propuestos en turno**, cada uno con su jornada
+declarada en el CSV. Pasar lista es marcar las excepciones, no escribir
+veintidos veces el mismo numero:
+
+| Personal | Maquinaria |
+| --- | --- |
+| En turno · Descanso · Ausente · Licencia · En traslado | Operativa · No usada · Falla mecanica · En mantencion · Desmovilizada |
+
+Solo *En turno* pide horas y solo *En turno* suma. Marcar a alguien ausente
+esconde el campo en vez de dejarlo en cero a la vista, que es donde se cuelan
+los errores. La maquinaria no lleva horas: lleva estado y observacion, que es lo
+que la primera pagina del informe pide explicar cuando algo quedo parado.
+
+Arriba, el resumen del dia se recalcula mientras se marca:
+
+> `4 de 5 en turno · 33,0 horas hombre · 2 directos · 2 indirectos · 1 de 2
+> maquinas operativas`
+
+**Las horas acumuladas no se guardan, se suman.** Un acumulado guardado se
+desincroniza en cuanto se corrige un dia anterior, y corregir un dia anterior es
+lo normal: llega el parte del supervisor, resulta que alguien se fue a las tres.
+Por eso cada fila muestra lo de antes —`9,00 h antes`— calculado de los
+registros, y corregir el martes arregla el acumulado del viernes solo.
+
+**Planilla de horas** baja el CSV en el formato del informe:
+
+```
+n;nombre;directo_indirecto;puesto;estatus;horas_dia;horas_anterior;horas_acumuladas;observacion
+1;ARIAS FUENTES CRISTIAN;INDIRECTOS;SITE MANAGER;EN TURNO;9;9;18;
+5;TORRES VALENZUELA CIRO;DIRECTOS;OPERADOR;EN TURNO;12;0;12;
+```
+
+Directo o indirecto es una division contractual, no una propiedad del oficio:
+se declara en la columna `directo_indirecto` del CSV y se respeta tal cual. Sin
+declarar, la oficina se asume indirecta y el terreno directo, que es lo que
+pasa casi siempre, pero el dato del usuario manda.
+
+**Las tarifas no viven aca.** El puesto tiene un valor asociado —M1, M2, capataz
+no son solo nombres— pero eso es del visor de costos, que es aparte. Lo que esta
+pantalla controla son las horas; multiplicarlas viene despues y no obliga a
+rehacer nada, porque el dato que falta es la tarifa, no la hora.
 
 ## Recursos repartidos en el plano
 
@@ -828,6 +881,7 @@ js/report.js            parte diario: lo del dia, rendimiento real y proyeccion
 js/parque.js            esquema de capas de obra electrica y armado de la obra
 js/obra.js              datos de la obra y la carpeta donde deja sus archivos
 js/partes.js            partes de avance entre dispositivos y su fusion
+js/asistencia.js        asistencia diaria, horas acumuladas y estado de maquinas
 js/app.js               union de todo y logica de pantalla
 sw.js                   service worker (uso sin conexion)
 manifest.webmanifest    instalacion como aplicacion

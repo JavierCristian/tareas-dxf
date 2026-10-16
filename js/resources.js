@@ -150,6 +150,7 @@ export function createResource(projectId, patch = {}) {
         to: '',        // hasta cuando; vacio, hasta el final
         operator: '',  // id del operador que la maneja, en la maquinaria
         shift: '',     // turno: dia, noche o mixto
+        direct: null,  // mano de obra directa o indirecta; null = se deduce del cargo
         createdAt: now,
         updatedAt: now,
         ...patch
@@ -214,7 +215,7 @@ function csvNumber(value) {
    importar, de modo que el archivo exportado se puede editar y volver a subir. */
 export const RESOURCE_COLUMNS = [
     'tipo', 'nombre', 'cargo', 'identificador', 'marca', 'cuadrilla', 'telefono',
-    'cantidad', 'atiende', 'rendimiento_hora', 'unidad_rendimiento', 'horas_jornada',
+    'directo_indirecto', 'cantidad', 'atiende', 'rendimiento_hora', 'unidad_rendimiento', 'horas_jornada',
     'turno', 'desde', 'hasta', 'operador',
     'combustible_l_hora', 'costo_hora', 'unidad_costo',
     'horometro', 'proxima_mantencion_h', 'estado', 'notas'
@@ -280,6 +281,8 @@ export function resourcesToCsv(resources, tasks) {
             resource.brand,
             resource.group,
             resource.phone,
+            resource.direct === null || resource.direct === undefined
+                ? '' : (resource.direct ? 'DIRECTOS' : 'INDIRECTOS'),
             countOf(resource),
             csvNumber(resource.serves),
             csvNumber(rate.value),
@@ -309,30 +312,14 @@ export function resourcesCsvTemplate() {
     // unidad_rendimiento;horas_jornada;turno;desde;hasta;operador;
     // combustible_l_hora;costo_hora;horometro;proxima_mantencion_h;estado;notas
     const ejemplos = [
-        ['Maquinaria', 'Retroexcavadora CAT 320', 'Excavacion de zanja', 'PP-1234', 'Caterpillar', '', '',
-            '1', '', '60', 'm3', '9', 'Dia', '2026-10-12', '', 'Juan Perez',
-            '18', '45000', 'Por hora', '4820', '5000', 'Activo', ''],
-        ['Maquinaria', 'Cargador frontal 950', 'Carguio', 'RR-5678', 'Caterpillar', '', '',
-            '1', '', '80', 'm3', '9', 'Noche', '2026-11-03', '2027-02-28', 'Pedro Soto',
-            '22', '52000', 'Por hora', '3100', '3500', 'Activo', 'Llega en noviembre'],
-        ['Personal', 'Juan Perez', 'Operador', '12.345.678-9', '', '', '+56 9 1234 5678',
-            '1', '', '', '', '9', 'Dia', '', '', '',
-            '', '12000', 'Por hora', '', '', 'Activo', ''],
-        ['Personal', 'Pedro Soto', 'Operador', '13.456.789-0', '', '', '',
-            '1', '', '', '', '9', 'Noche', '2026-11-03', '', '',
-            '', '12000', 'Por hora', '', '', 'Activo', ''],
-        ['Personal', 'Luis Rojas', 'Maestro electrico', '14.567.890-1', '', 'Cuadrilla 1', '',
-            '1', '', '', '', '9', 'Dia', '', '', '',
-            '', '9500', 'Por hora', '', '', 'Activo', ''],
-        ['Instalaciones', 'Bano quimico', 'Servicios higienicos', '', '', '', '',
-            '4', '10', '', '', '', '', '2026-10-12', '', '',
-            '', '180000', 'Por mes', '', '', 'Activo', 'Retiro semanal'],
-        ['Instalaciones', 'Estacion de sombra e hidratacion', 'Proteccion UV', '', '', '', '',
-            '3', '25', '', '', '', '', '2026-10-12', '', '',
-            '', '12000', 'Por dia', '', '', 'Activo', ''],
-        ['Instalaciones', 'Container comedor', 'Instalacion de faenas', '', '', '', '',
-            '1', '40', '', '', '', '', '2026-10-12', '', '',
-            '', '450000', 'Por mes', '', '', 'Activo', '']
+        ['Maquinaria', 'Retroexcavadora CAT 320', 'Excavacion de zanja', 'PP-1234', 'Caterpillar', '', '', 'DIRECTOS', '1', '', '60', 'm3', '9', 'Dia', '2026-10-12', '', 'Juan Perez', '18', '45000', 'Por hora', '4820', '5000', 'Activo', ''],
+        ['Maquinaria', 'Cargador frontal 950', 'Carguio', 'RR-5678', 'Caterpillar', '', '', 'DIRECTOS', '1', '', '80', 'm3', '9', 'Noche', '2026-11-03', '2027-02-28', 'Pedro Soto', '22', '52000', 'Por hora', '3100', '3500', 'Activo', 'Llega en noviembre'],
+        ['Personal', 'Juan Perez', 'Operador', '12.345.678-9', '', '', '+56 9 1234 5678', 'DIRECTOS', '1', '', '', '', '9', 'Dia', '', '', '', '', '12000', 'Por hora', '', '', 'Activo', ''],
+        ['Personal', 'Pedro Soto', 'Operador', '13.456.789-0', '', '', '', 'DIRECTOS', '1', '', '', '', '9', 'Noche', '2026-11-03', '', '', '', '12000', 'Por hora', '', '', 'Activo', ''],
+        ['Personal', 'Luis Rojas', 'Maestro electrico', '14.567.890-1', '', 'Cuadrilla 1', '', 'DIRECTOS', '1', '', '', '', '9', 'Dia', '', '', '', '', '9500', 'Por hora', '', '', 'Activo', ''],
+        ['Instalaciones', 'Bano quimico', 'Servicios higienicos', '', '', '', '', '', '4', '10', '', '', '', '', '2026-10-12', '', '', '', '180000', 'Por mes', '', '', 'Activo', 'Retiro semanal'],
+        ['Instalaciones', 'Estacion de sombra e hidratacion', 'Proteccion UV', '', '', '', '', '', '3', '25', '', '', '', '', '2026-10-12', '', '', '', '12000', 'Por dia', '', '', 'Activo', ''],
+        ['Instalaciones', 'Container comedor', 'Instalacion de faenas', '', '', '', '', '', '1', '40', '', '', '', '', '2026-10-12', '', '', '', '450000', 'Por mes', '', '', 'Activo', '']
     ];
     const filas = ejemplos.map((fila) => fila.map(csvCell).join(';'));
     return '\ufeff' + [RESOURCE_COLUMNS.join(';'), ...filas].join('\r\n');
@@ -361,6 +348,7 @@ const COLUMN_ALIASES = {
     rateUnit: ['unidad_rendimiento', 'unidad', 'unidad_rend', 'medida'],
     hoursPerDay: ['horas_jornada', 'horas_dia', 'jornada', 'horas_por_dia'],
     shift: ['turno', 'shift', 'jornada_turno', 'horario'],
+    direct: ['directo_indirecto', 'directo', 'tipo_mano_obra', 'mo', 'clasificacion'],
     from: ['desde', 'fecha_desde', 'inicio', 'entrada', 'disponible_desde', 'llegada'],
     to: ['hasta', 'fecha_hasta', 'termino', 'salida', 'disponible_hasta', 'retiro'],
     operator: ['operador', 'operario', 'conductor', 'chofer', 'maquinista', 'a_cargo'],
@@ -377,6 +365,15 @@ function pick(row, field) {
         if (row[alias] !== undefined && row[alias] !== '') return row[alias];
     }
     return '';
+}
+
+/** Directo o indirecto, escrito como venga: DIRECTOS, indirecto, D, I. */
+function readDirect(value) {
+    const text = normalizeHeader(value);
+    if (!text) return null;
+    if (text.startsWith('d')) return true;
+    if (text.startsWith('i')) return false;
+    return null;
 }
 
 /** Como se cobra, escrito como venga: /h, por dia, mensual, arriendo mes... */
@@ -489,6 +486,7 @@ export function resourcesFromCsv(text, projectId, existing = []) {
             serves: toNumber(pick(row, 'serves')) || 0,
             costUnit: readCostUnit(pick(row, 'costUnit')),
             shift: readShift(pick(row, 'shift')),
+            direct: readDirect(pick(row, 'direct')),
             from: readDate(pick(row, 'from')),
             to: readDate(pick(row, 'to')),
             fuel: toNumber(pick(row, 'fuel')) || 0,
